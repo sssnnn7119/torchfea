@@ -32,7 +32,7 @@ fe.solver = FEA.solver.StaticImplicitSolver()
 
 # FEA.add_load(Loads.Body_Force_Undeformed(force_volumn_density=[1e-5, 0.0, 0.0], elem_index=FEA.elems['C3D4']._elems_index))
 
-fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.08),
+fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06),
                 name='pressure-1')
 # fe.assembly.add_load(FEA.loads.ContactSelf(instance_name='final_model',surface_name='surface_0_All', penalty_distance_g=10, penalty_threshold_h=5.5))
 fe.assembly.add_load(FEA.loads.ContactSelf(instance_name='final_model',surface_name='surface_0_All'))

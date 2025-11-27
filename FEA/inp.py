@@ -2,25 +2,22 @@ from io import TextIOWrapper
 from typing import TextIO
 import numpy as np
 from threading import Thread
-import torch
-
-
-
 
 class FEA_INP():
 
     class Parts():
         def __init__(self) -> None:
             self.elems: dict['str', np.ndarray]
-            self.nodes: torch.Tensor
+            self.nodes: np.ndarray
             self.sections: list
             self.sets_nodes: dict['str', set]
             self.sets_elems: dict['str', set]
             self.surfaces: dict[str, list[tuple[np.ndarray, int]]]
+            self.surfaces_tri: dict[str, np.ndarray]
             
             self.num_elems_3D: int
             self.num_elems_2D: int
-            self.elems_material: torch.Tensor
+            self.elems_material: np.ndarray
             """
             0: index of the element\n
             1: density of the element\n
@@ -42,6 +39,7 @@ class FEA_INP():
             self.num_elems_3D = 0
             self.num_elems_2D = 0
             section = []
+            self.surfaces_tri = {}
             while ind < len(origin_data):
                 now = origin_data[ind]
                 if len(now) > 9 and now[0:9] == '*End Part':
@@ -234,11 +232,11 @@ class FEA_INP():
                             element for sublist in datalist for element in sublist
                         ]
                         self.sets_nodes[name] = set(
-                            (torch.tensor(datalist, dtype=torch.int) - 1).tolist())
+                            (np.array(datalist, dtype=int) - 1).tolist())
                     else:
                         now = list(map(int, origin_data[ind].split(',')))
                         self.sets_nodes[name] = set(
-                            (torch.arange(now[0], now[1]+1, now[2]) - 1).tolist())
+                            (np.arange(now[0], now[1]+1, now[2]) - 1).tolist())
                     continue
 
                 # case element set
@@ -265,12 +263,12 @@ class FEA_INP():
                             element for sublist in datalist for element in sublist
                         ]
                         self.sets_elems[name] = set(
-                            (torch.tensor(datalist, dtype=torch.int) - 1).tolist())
+                            (np.array(datalist, dtype=int) - 1).tolist())
                         continue
                     else:
                         now = list(map(int, origin_data[ind].split(',')))
                         self.sets_elems[name] = set(
-                            (torch.arange(now[0], now[1]+1, now[2]) - 1).tolist())
+                            (np.arange(now[0], now[1]+1, now[2]) - 1).tolist())
                         continue
                 
                 # case surfaces
@@ -325,10 +323,11 @@ class FEA_INP():
                                         surfaceList.append(elem[:, [8,10,7]])
                                         
                                 self.surfaces[name].append((elem_now[elem_index, 0], surface_index-1))
-                        try:
-                            self.surfaces_tri[name] = np.concatenate(surfaceList, axis=0)
-                        except:
-                            pass
+                            try:
+                                self.surfaces_tri[name] = np.concatenate(surfaceList, axis=0)
+                            except ValueError:
+                                self.surfaces_tri[name] = np.array([])
+
                     continue
 
                 # case node
@@ -343,7 +342,7 @@ class FEA_INP():
                     datalist = [[
                         float(i) for i in row.replace('\n', '').strip().split(',')
                     ] for row in origin_data[ind0:ind1]]
-                    self.nodes = torch.tensor(datalist)
+                    self.nodes = np.array(datalist, dtype=float)
                     self.nodes[:, 0] -= 1
                     continue
 
@@ -364,8 +363,8 @@ class FEA_INP():
                 ind += 1
 
             self.sections = section
-            self.elems_material = -torch.ones(
-                [self.num_elems_2D + self.num_elems_3D, 5])
+            self.elems_material = -np.ones(
+                [self.num_elems_2D + self.num_elems_3D, 5], dtype=float)
 
         def write_inp(self, f: TextIOWrapper, part_name: str):
             """
@@ -510,7 +509,7 @@ class FEA_INP():
             self.instances: dict['str', tuple[str, np.ndarray]]
             self.sets_nodes: dict['str', set]
             self.sets_elems: dict['str', set]
-            self.nodes: torch.Tensor
+            self.nodes: np.ndarray
             self.sets_elems: dict['str', set]
             self.sets_nodes: dict['str', set]
 
@@ -627,11 +626,11 @@ class FEA_INP():
                             element for sublist in datalist for element in sublist
                         ]
                         self.sets_nodes[name] = set(
-                            (torch.tensor(datalist, dtype=torch.int) - 1).tolist())
+                            (np.array(datalist, dtype=int) - 1).tolist())
                     else:
                         now = list(map(int, origin_data[ind].split(',')))
                         self.sets_nodes[name] = set(
-                            (torch.arange(now[0], now[1]+1, now[2]) - 1).tolist())
+                            (np.arange(now[0], now[1]+1, now[2]) - 1).tolist())
                         ind += 1
                     continue
         
@@ -670,7 +669,7 @@ class FEA_INP():
                         else:
                             full_name = name
                         self.sets_elems[full_name] = set(
-                            (torch.tensor(datalist, dtype=torch.int) - 1).tolist())
+                            (np.array(datalist, dtype=int) - 1).tolist())
                     else:
                         now = list(map(int, origin_data[ind].split(',')))
                         if instance_name:
@@ -678,7 +677,7 @@ class FEA_INP():
                         else:
                             full_name = name
                         self.sets_elems[full_name] = set(
-                            (torch.arange(now[0], now[1]+1, now[2]) - 1).tolist())
+                            (np.arange(now[0], now[1]+1, now[2]) - 1).tolist())
                         ind += 1
                     continue
         
@@ -694,7 +693,7 @@ class FEA_INP():
                     datalist = [[
                         float(i) for i in row.replace('\n', '').strip().split(',')
                     ] for row in origin_data[ind0:ind1]]
-                    self.nodes = torch.tensor(datalist)
+                    self.nodes = np.array(datalist, dtype=float)
                     self.nodes[:, 0] -= 1
                     continue
         
@@ -826,7 +825,7 @@ class FEA_INP():
         self.part: dict['str', FEA_INP.Parts] = {}
         self.material: dict['str', FEA_INP.Materials] = {}
         self.assemble: FEA_INP.Assembly = FEA_INP.Assembly()
-        self.disp_result: list[dict['str', torch.Tensor]] = []
+        self.disp_result = []
 
     def read_inp(self, path):
         """
@@ -870,9 +869,9 @@ class FEA_INP():
         for p_key in self.part.keys():
             p = self.part[p_key]
             for sec in p.sections:
-                index = torch.tensor(list(p.sets_elems[sec[0]]))
+                index = np.array(list(p.sets_elems[sec[0]]), dtype=int)
                 mat = self.material[sec[1]]
-                p.elems_material[index, 0] = index.type_as(p.elems_material)
+                p.elems_material[index, 0] = index.astype(p.elems_material.dtype)
                 p.elems_material[index, 1] = mat.density
                 p.elems_material[index, 2] = mat.type
                 p.elems_material[index, 3] = mat.mat_para[0]

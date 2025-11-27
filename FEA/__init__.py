@@ -22,14 +22,18 @@ def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
 
     part_name = list(inp.part.keys())[0]
 
+    temp = torch.tensor([1.])
+    default_device = temp.device
+    default_dtype = temp.dtype
+
     for i in range(len(inp.part)):
         part_name = list(inp.part.keys())[i]
-        part_nodes = inp.part[part_name]
+        part_nodes = torch.from_numpy(inp.part[part_name].nodes).to(device=default_device, dtype=default_dtype)
 
-        part_now = Part(part_nodes.nodes[:, 1:])
+        part_now = Part(part_nodes[:, 1:])
 
         # define the set of nodes
-        for set_name, node_indices in part_nodes.sets_nodes.items():
+        for set_name, node_indices in inp.part[part_name].sets_nodes.items():
             part_now.set_nodes[set_name] = np.unique(np.array(list(node_indices)))
 
         assembly_now.add_part(part=part_now, name=part_name)
@@ -42,16 +46,16 @@ def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
         
         for key in list(elems.keys()):
 
-            materials_type = inp.part[part_name].elems_material[elems[key][:, 0], 2].type(torch.int).unique()
+            materials_type = np.unique(inp.part[part_name].elems_material[elems[key][:, 0], 2].astype(int))
 
             elems_num_now += elems[key].shape[0]
             for mat_type in materials_type:
-                index_now = torch.where(inp.part[part_name].elems_material[elems[key][:, 0], 2].type(torch.int) == mat_type)
+                index_now = np.where(inp.part[part_name].elems_material[elems[key][:, 0], 2].astype(int) == mat_type)
 
                 
                 materials_now = materials.initialize_materials(
-                    materials_type=mat_type.item(),
-                    materials_params=inp.part[part_name].elems_material[elems[key][:, 0]][index_now][:, 3:]
+                    materials_type=mat_type,
+                    materials_params=torch.from_numpy(inp.part[part_name].elems_material[elems[key][:, 0]][index_now][:, 3:]).to(device=default_device, dtype=default_dtype)
                 )
 
                 element_name = key
@@ -69,7 +73,7 @@ def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
                 part_now.add_element(elems_now)
  
         # Import surface sets from each part
-        for surface_name, surface in part_nodes.surfaces.items():
+        for surface_name, surface in inp.part[part_name].surfaces.items():
             full_name = f"{surface_name}"
             sf_now = []
             for sf in surface:

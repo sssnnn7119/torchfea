@@ -63,7 +63,7 @@ coo=extern_surf
 
 # Get the deformed surface coordinates
 U = fe.assembly._GC2RGC(fe.solver.GC)[0].cpu().numpy()
-undeformed_surface = (fem.part['final_model'].nodes[:,1:]).cpu().numpy()
+undeformed_surface = fem.part['final_model'].nodes[:,1:]
 deformed_surface = undeformed_surface + U
 
 r=deformed_surface.transpose()

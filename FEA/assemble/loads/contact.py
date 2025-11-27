@@ -83,7 +83,7 @@ class ContactBase(BaseLoad):
 
         return check>0
 
-    def _filter_point_pairs(self, surface_element1: BaseSurface, surface_element2: BaseSurface, nodes1: torch.Tensor, nodes2: torch.Tensor, max_search_length_ratio: float = 2.0):
+    def _filter_point_pairs(self, surface_element1: BaseSurface, surface_element2: BaseSurface, nodes1: torch.Tensor, nodes2: torch.Tensor, max_search_length_ratio: float = 2.5):
         """
         Filter point pairs between surfaces for contact detection.
         
@@ -246,8 +246,8 @@ class ContactSelf(ContactBase):
     """
 
     def __init__(self, instance_name: str, surface_name: str,
-                 ignore_min_normal: float = 0.8,
-                 ignore_max_normal: float = 1.2, 
+                 ignore_min_normal: float = -0.5,
+                 ignore_max_normal: float = 0.0, 
                  initial_detact_ratio: float = 2., **kwargs):
         """
         Initialize the self-contact load.
@@ -636,7 +636,7 @@ class ContactSelf(ContactBase):
                 torch.einsum('gGp, gGpnyj, gGpmxi->gGpmxinyj', f, gdE, hdE)+\
                 torch.einsum('gGp, gGp, gGpmxinyj->gGpmxinyj', f, g, hdE_2)
         
-        pdE_2 = pdE_2 * ratio[:, :, :, None, None, None, None, None, None] * weight[:, :, :, None, None, None, None, None, None]
+        pdE_2 = torch.einsum('gGpmxinyj, gGp, gGp->gGpmxinyj', pdE_2, ratio, weight)
  
         # pdUe = torch.zeros([num_e, num_n, 3])
         pdEsum0 = pdE.sum(0)

@@ -32,15 +32,15 @@ class T3(BaseSurface):
         self.shape_function.append(shape_i)
         
         # Define Gaussian points for T3 surface
-        # pp = torch.tensor([[1 / 3, 1 / 3]])
-        # self.gaussian_weight = torch.tensor([0.5])
-        pp = torch.tensor([[1/6, 1/6],
-                          [2/3, 1/6],
-                          [1/6, 2/3]])
-        self.gaussian_weight = torch.tensor([1/6, 1/6, 1/6])
+        pp = torch.tensor([[1 / 3, 1 / 3]])
+        self.gaussian_weight = torch.tensor([0.5])
+        # pp = torch.tensor([[1/6, 1/6],
+        #                   [2/3, 1/6],
+        #                   [1/6, 2/3]])
+        # self.gaussian_weight = torch.tensor([1/6, 1/6, 1/6])
 
         self.num_nodes_per_elem = 3
-        self._num_gaussian = 3
+        self._num_gaussian = 1
         
         # Pre-load Gaussian points for T3 surface
         self._pre_load_gaussian(pp, fea.nodes)
