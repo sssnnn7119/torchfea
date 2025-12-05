@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from errno import ENETRESET
-from math import e
-from telnetlib import GA
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:

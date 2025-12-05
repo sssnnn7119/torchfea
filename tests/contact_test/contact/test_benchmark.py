@@ -1,12 +1,14 @@
-import torch
 import os
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import torch
+
 import numpy as np
 import time
 import sys
 sys.path.append('.')
 
 import FEA
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
+
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cuda'))

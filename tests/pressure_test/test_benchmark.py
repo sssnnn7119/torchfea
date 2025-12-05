@@ -1,10 +1,11 @@
-import torch
+
 import os
-import numpy as np
 import time
 import sys
 sys.path.append('.')
 
+import numpy as np
+import torch
 import FEA
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +22,7 @@ fem = FEA.FEA_INP()
 #     'Z:\RESULT\T20240325195025_\Cache/TopOptRun.inp'
 # )
  
-fem.read_inp(current_path + '/C3D4.inp')
+fem.read_inp(current_path + '/C3D4Less.inp')
 
 fe = FEA.from_inp(fem)
 fe.solver = FEA.solver.StaticImplicitSolver()
