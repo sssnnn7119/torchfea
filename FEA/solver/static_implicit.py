@@ -41,11 +41,6 @@ class StaticImplicitSolver(BaseSolver):
         The tolerance error for the solver.
         """
 
-        self._k_solver: pypardiso.PyPardisoSolver = None
-        """
-        The Pardiso solver instance for solving linear equations.
-        """
-
         self.__low_alpha_count = 0
 
     def solve(self, GC0: torch.Tensor = None, *args, **kwargs) -> bool:
@@ -82,6 +77,72 @@ class StaticImplicitSolver(BaseSolver):
 
         return self.GC
    
+    def get_jacobian(self, GC_now: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the Jacobian matrix for the current configuration.
+
+        Args:
+            GC_now (torch.Tensor): Current generalized coordinates.
+        Returns:
+            torch.Tensor: The Jacobian matrix.
+        """
+        total_params_list = []
+        for load in self.assembly._loads.values():
+            total_params_list.append(load._parameters.flatten().detach().clone())
+        total_params = torch.cat(total_params_list, dim=0)
+        def closure_R(total_params: torch.Tensor):
+
+            index_now = 0
+            for load in self.assembly._loads.values():
+                param_len = load._parameters.numel()
+                load._parameters = total_params[index_now:index_now+param_len].reshape(load._parameters.shape)
+                index_now += param_len
+            R = self.assembly.assemble_force(GC=GC_now)
+
+            # remove the leaf parameters
+            for load in self.assembly._loads.values():
+                load._parameters = load._parameters.detach()
+
+            return R
+        
+        from torch.autograd.functional import jvp
+        
+        num_params = total_params.numel()
+        if num_params > 0:
+            Rdp_cols = []
+            # Create identity matrix to project gradients one by one (column-wise)
+            basis_vectors = torch.eye(num_params, device=total_params.device, dtype=total_params.dtype)
+            
+            for i in range(num_params):
+                # Compute Jacobian-Vector Product for the i-th parameter
+                # This computes the i-th column of the Jacobian
+                _, col = jvp(closure_R, total_params, v=basis_vectors[i], create_graph=False)
+                Rdp_cols.append(col)
+            
+            Rdp = torch.stack(Rdp_cols, dim=1)
+        else:
+            # Handle case with no parameters
+            R_dummy = closure_R(total_params)
+            Rdp = torch.zeros((R_dummy.shape[0], 0), device=total_params.device, dtype=total_params.dtype)
+
+
+        K_indices, K_values = self.assembly.assemble_Stiffness_Matrix(GC=GC_now)[1:]
+        import scipy.sparse as sp
+        K_sp = sp.coo_matrix(
+            (K_values.detach().cpu().numpy(), (K_indices[0].cpu().numpy(),
+                                        K_indices[1].cpu().numpy()))).tocsr()
+        jacobian = -pypardiso.spsolve(K_sp, Rdp.detach().cpu().numpy())
+
+        jacobian_output = {}
+        index_now = 0
+        for load_name, load in self.assembly._loads.items():
+            param_len = load._parameters.numel()
+            jacobian_output[load_name] = torch.from_numpy(jacobian[:, index_now:index_now+param_len]).to(GC_now.dtype).to(GC_now.device)
+            index_now += param_len
+
+        return jacobian_output
+    
+
     def get_total_energy(self, GC_now: torch.Tensor) -> float:
         
         potential_energy = self.assembly._total_Potential_Energy(GC=GC_now)

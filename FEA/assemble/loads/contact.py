@@ -366,6 +366,8 @@ class ContactSelf(ContactBase):
 
         if num_p == 0:
             # No active contact pairs
+            if if_onlyforce:
+                return torch.tensor([], dtype=torch.int64), torch.tensor([])
             return torch.tensor([], dtype=torch.int64), torch.tensor([]), torch.tensor([[], []], dtype=torch.int64), torch.tensor([])
         
 
@@ -570,9 +572,6 @@ class ContactSelf(ContactBase):
             pdU_indices = torch.stack([pdU_indices*3, pdU_indices*3+1, pdU_indices*3+2], dim=-1)
             pdU_indices = pdU_indices.to(self._assembly.device)
 
-            if if_onlyforce:
-                return pdU_indices.reshape([2, -1]), pdU_values.flatten(), torch.tensor([[], []], dtype=torch.int64), torch.tensor([])
-
             # pdU = torch.zeros_like(Y).flatten().scatter_add_(0, pdU_indices.flatten(), pdU_values.flatten()).reshape([-1, 3])
 
             pdUe_2_values00 = torch.einsum('gpxiyj, gpxial, gpyjbL->palbL', pdE_2.sum(1)[:, :, 0, :, :, 0], edUe[:, point_pairs[0]], edUe[:, point_pairs[0]]) + \
@@ -628,13 +627,19 @@ class ContactSelf(ContactBase):
             pdU_2_values_total.append(pdU_2_values.flatten())
 
             index_now += batch_size
-
+        
+        
+        index_start = self._assembly.RGC_list_indexStart[instance._RGC_index]
         pdU_indices = torch.cat(pdU_indices_total, dim=0)
         pdU_values = torch.cat(pdU_values_total, dim=0)
+
+        if if_onlyforce:
+            return pdU_indices + index_start, -pdU_values
+
         pdU_2_indices = torch.cat(pdU_2_indices_total, dim=1)
         pdU_2_values = torch.cat(pdU_2_values_total, dim=0)
 
-        index_start = self._assembly.RGC_list_indexStart[instance._RGC_index]
+        
         return pdU_indices + index_start, -pdU_values, pdU_2_indices + index_start, -pdU_2_values
 
     def set_required_DoFs(
@@ -846,6 +851,8 @@ class Contact(ContactBase):
 
         if index_remain_total.shape[0] == 0:
             # No active contact pairs
+            if if_onlyforce:
+                return torch.tensor([], dtype=torch.int64), torch.tensor([])
             return torch.tensor([], dtype=torch.int64), torch.tensor([]), torch.tensor([[], []], dtype=torch.int64), torch.tensor([])
 
         pdU_indices_total = [] 
@@ -1075,7 +1082,7 @@ class Contact(ContactBase):
 
             if if_onlyforce:
                 
-                return pdU_values, pdU_indices, torch.tensor([[], []], dtype=torch.int64), torch.tensor([])
+                return pdU_indices.flatten(), -pdU_values.flatten()
 
 
             # For stiffness matrix, return simplified version (full implementation would be very complex)
