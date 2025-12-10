@@ -13,8 +13,8 @@ class ContactBase(BaseLoad):
                  penalty_degree: int = 9,
                  penalty_threshold_h: float = 1.5,
                  penalty_ratio_h: float = 0.9,
-                 penalty_start_f: float = -0.6,
-                 penalty_end_f: float = -0.7):
+                 penalty_start_f: float = -0.8,
+                 penalty_end_f: float = -0.85):
         """
         Initialize the base contact load with common parameters.
 
@@ -82,7 +82,7 @@ class ContactBase(BaseLoad):
 
         return check>0
 
-    def _filter_point_pairs(self, surface_element1: BaseSurface, surface_element2: BaseSurface, nodes1: torch.Tensor, nodes2: torch.Tensor, max_search_length_ratio: float = 2.0):
+    def _filter_point_pairs(self, surface_element1: BaseSurface, surface_element2: BaseSurface, nodes1: torch.Tensor, nodes2: torch.Tensor, max_search_length_ratio: float = 2.5):
         """
         Filter point pairs between surfaces for contact detection.
         
@@ -339,7 +339,7 @@ class ContactSelf(ContactBase):
         index_remain = (ratio_d.sum([0, 1]) > 0)
 
         self._point_pairs = self._point_pairs[:, index_remain]
-        self._ratio = ratio_d[:, :, index_remain]
+        self._ratio = ratio_d[:, :, index_remain] / ratio_d[:, :, index_remain]
 
     def get_potential_energy(self, RGC):
 
@@ -963,8 +963,8 @@ class Contact(ContactBase):
             point_pairs = self._point_pairs[:, index_remain]
             num_p = index_remain.shape[0]
 
-            if index_remain.shape[0] > 0:
-                print('  Contact pairs: ', index_remain.shape[0])
+            # if index_remain.shape[0] > 0:
+            #     print('  Contact pairs: ', index_remain.shape[0])
 
             # Filter all variables
             MM = MM0[:, :, index_remain]

@@ -326,26 +326,26 @@ class StaticImplicitSolver(BaseSolver):
         else:
             self.__low_alpha_count = 0
 
-        if self.__low_alpha_count > 3 or R_preconditioned.abs().max() < 1e-3 or K_values_preconditioned.device.type == 'cpu':
+        if self.__low_alpha_count > 5 or R_preconditioned.abs().max() < 1e-3 or K_values_preconditioned.device.type == 'cpu':
             dx = _linear_solver.pypardiso_solver(K_indices,
                                                  K_values_preconditioned,
                                                  R_preconditioned)
             self.__low_alpha_count = 0
         else:
-            if iter_now % 20 == 0 or self.__low_alpha_count > 0:
+            if self.__low_alpha_count > 0:
                 dx = _linear_solver.conjugate_gradient(K_indices,
                                                        K_values_preconditioned,
                                                        R_preconditioned,
                                                        x0,
                                                        tol=1e-5,
-                                                       max_iter=6000)
+                                                       max_iter=3000)
             else:
                 dx = _linear_solver.conjugate_gradient(K_indices,
                                                        K_values_preconditioned,
                                                        R_preconditioned,
                                                        x0,
                                                        tol=1e-5,
-                                                       max_iter=1500)
+                                                       max_iter=1200)
         result = dx.to(R.dtype) / diag
         return result
 
