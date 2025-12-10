@@ -42,7 +42,7 @@ def conjugate_gradient(A_indices: torch.Tensor,
     return x
 
 def pypardiso_solver(A_indices: torch.Tensor, A_values: torch.Tensor,
-                        b: torch.Tensor):
+                        b: torch.Tensor) -> torch.Tensor:
     import pypardiso
     import scipy.sparse as sp
 
@@ -51,6 +51,6 @@ def pypardiso_solver(A_indices: torch.Tensor, A_values: torch.Tensor,
                                     A_indices[1].cpu().numpy()))).tocsr()
 
     b_np = b.detach().cpu().numpy()
-    x = pypardiso.spsolve(A_sp, b_np)
 
+    x = pypardiso.spsolve(A_sp, b_np)
     return torch.from_numpy(x).to(b.dtype).to(b.device)

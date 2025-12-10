@@ -71,6 +71,35 @@ class Assembly:
         self.mass_matrix_values: torch.Tensor
         """The values of the mass matrix"""
 
+    # region data IO
+
+    def get_load_parameters(self) -> dict[str, torch.Tensor]:
+        """
+        Get the load parameters.
+
+        Returns:
+            dict: A dictionary containing load names as keys and their parameters as values.
+        """
+        load_params = {}
+        for load_name, load in self._loads.items():
+            load_params[load_name] = load._parameters.clone().detach()
+        return load_params
+    
+    def set_load_parameters(self, load_params: dict[str, torch.Tensor]) -> None:
+        """
+        Set the load parameters.
+
+        Args:
+            load_params (dict): A dictionary containing load names as keys and their parameters as values.
+        """
+        for load_name, params in load_params.items():
+            if load_name in self._loads:
+                self._loads[load_name]._parameters = params.clone().detach()
+            else:
+                raise ValueError(f"Load with name {load_name} does not exist in the assembly.")
+
+    # endregion
+
     # region Initialization
 
     def initialize(self, *args, **kwargs):

@@ -23,7 +23,7 @@ class Pressure(BaseLoad):
             the surface element
         """
 
-        self.pressure = pressure
+        self._parameters = torch.tensor([pressure], dtype=torch.float64).flatten()
         """
         The pressure value applied to the surface element.
         """
@@ -39,6 +39,20 @@ class Pressure(BaseLoad):
         """
 
         self._load_index: int
+
+    @property
+    def pressure(self) -> float:
+        """
+        Get the pressure value.
+        """
+        return self._parameters[0]
+    
+    @pressure.setter
+    def pressure(self, value: float) -> None:
+        """
+        Set the pressure value.
+        """
+        self._parameters = torch.tensor([value], dtype=torch.float64).flatten()
 
     def initialize(self, assembly):
         super().initialize(assembly)
