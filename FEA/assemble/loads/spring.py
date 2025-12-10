@@ -46,9 +46,25 @@ class Spring_RP_RP(BaseLoad):
         super().__init__()
         self.rp_name1 = rp_name1
         self.rp_name2 = rp_name2
-        self.k = float(k)
-        self.rest_length = None if rest_length is None else float(rest_length)
+        
+        rl = rest_length if rest_length is not None else -1.0
+        self._parameters = torch.tensor([k, rl], dtype=torch.float64)
 
+    @property
+    def k(self) -> float:
+        return self._parameters[0]
+    
+    @k.setter
+    def k(self, value: float) -> None:
+        self._parameters[0] = value
+
+    @property
+    def rest_length(self) -> float:
+        return self._parameters[1]
+    
+    @rest_length.setter
+    def rest_length(self, value: float) -> None:
+        self._parameters[1] = value
 
         # indices cache
         self._rp_index1: int | None = None
@@ -69,7 +85,7 @@ class Spring_RP_RP(BaseLoad):
         self._idx_tr2 = torch.arange(s2, s2 + 3, device=assembly.device, dtype=torch.int64)
 
         # Default rest length from initial geometry if not provided
-        if self.rest_length is None:
+        if self.rest_length < 0:
             p1 = rp1.node.to(assembly.device).to(torch.get_default_dtype())
             p2 = rp2.node.to(assembly.device).to(torch.get_default_dtype())
             self.rest_length = torch.linalg.norm(p2 - p1).item()

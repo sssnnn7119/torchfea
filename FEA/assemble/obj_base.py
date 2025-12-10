@@ -32,6 +32,11 @@ class BaseObj():
         self._assembly: Assembly = None
         """The assembly this object belongs to."""
 
+        self._parameters: torch.Tensor = torch.zeros(0, dtype=torch.float64)
+        """The parameters of this object.
+        This is a 1D tensor containing all the parameters of this object.
+        """
+
     def set_RGC_index(self, index: int) -> None:
         """
         Set the index of the extra RGC for this object.

@@ -12,7 +12,7 @@ class BodyForce(BaseLoad):
             force_density (list[float]): The body force density vector [fx, fy, fz]. (unit: force per unit volume)
         """
         super().__init__()
-        self.force_density = torch.tensor(force_density, dtype=torch.float64)
+        self._parameters = torch.tensor(force_density, dtype=torch.float64)
         
         self._element_name = element_name
 
@@ -36,6 +36,23 @@ class BodyForce(BaseLoad):
         self._pdU_indices = torch.stack([self._element._elems*3, self._element._elems*3+1, self._element._elems*3+2], dim=-1).to(instance.nodes.device).to(torch.int64) + instance._index_start
         self._pdU_values = torch.einsum('i, ge, gea->eai', self.force_density, self._element.gaussian_weight, self._element.shape_function_d0_gaussian).flatten()
         self._instance_RGC_index = instance._RGC_index
+
+    @property
+    def force_density(self) -> torch.Tensor:
+        """
+        Get the body force density vector.
+        """
+        return self._parameters
+    
+    @force_density.setter
+    def force_density(self, value: list[float] | torch.Tensor) -> None:
+        """
+        Set the body force density vector.
+        """
+        if isinstance(value, list):
+            self._parameters = torch.tensor(value, dtype=torch.float64)
+        else:
+            self._parameters = value.to(torch.float64)
     def get_stiffness(self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get the body force vector. Body forces don't contribute to stiffness matrix.

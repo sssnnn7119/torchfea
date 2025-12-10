@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 
+import pypardiso
+
 if TYPE_CHECKING:
     from .. import Assembly
 import time
@@ -37,6 +39,11 @@ class StaticImplicitSolver(BaseSolver):
         self.tol_error: float = tol_error
         """
         The tolerance error for the solver.
+        """
+
+        self._k_solver: pypardiso.PyPardisoSolver = None
+        """
+        The Pardiso solver instance for solving linear equations.
         """
 
         self.__low_alpha_count = 0
@@ -327,9 +334,9 @@ class StaticImplicitSolver(BaseSolver):
             self.__low_alpha_count = 0
 
         if self.__low_alpha_count > 5 or R_preconditioned.abs().max() < 1e-3 or K_values_preconditioned.device.type == 'cpu':
-            dx = _linear_solver.pypardiso_solver(K_indices,
-                                                 K_values_preconditioned,
-                                                 R_preconditioned)
+            dx = _linear_solver.pypardiso_solver(A_indices=K_indices,
+                                                 A_values=K_values_preconditioned,
+                                                 b=R_preconditioned)
             self.__low_alpha_count = 0
         else:
             if self.__low_alpha_count > 0:

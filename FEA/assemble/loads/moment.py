@@ -8,18 +8,18 @@ class Moment(BaseLoad):
         super().__init__()
         self.rp_name = rp_name
         self.rp_index: int = None
-        self._moment = torch.tensor(moment)
+        self._parameters = torch.tensor(moment, dtype=torch.float64)
 
     @property
     def moment(self) -> torch.Tensor:
-        return self._moment
+        return self._parameters
     
     @moment.setter
     def moment(self, value: list[float] | torch.Tensor) -> None:
-        if type(value) == list:
-            self._moment = torch.tensor(value)
+        if isinstance(value, list):
+            self._parameters = torch.tensor(value, dtype=torch.float64)
         else:
-            self._moment = value
+            self._parameters = value.to(torch.float64)
 
     def initialize(self, assembly):
         super().initialize(assembly)
