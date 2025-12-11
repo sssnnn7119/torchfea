@@ -34,6 +34,12 @@ class BaseLoad(BaseObj):
             the start index of the stiffness matricx of structural stress
         """
 
+        
+        self._parameters: torch.Tensor = torch.zeros(0, dtype=torch.float64)
+        """The parameters of this object.
+        This is a 1D tensor containing all the parameters of this object.
+        """
+
     def initialize(self, assembly: Assembly):
         super().initialize(assembly)
     
