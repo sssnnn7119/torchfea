@@ -1,12 +1,14 @@
-import torch
+
 import os
+
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import torch
 import numpy as np
 import time
 import sys
 sys.path.append('.')
 
 import FEA
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cpu'))
@@ -64,7 +66,7 @@ coo=extern_surf
 # Get the deformed surface coordinates
 
 # Prepare undeformed surface
-undeformed_surface = (fem.part['final_model'].nodes[:,1:]).cpu().numpy()
+undeformed_surface = (fem.part['final_model'].nodes[:,1:])
 Unorm_list = []
 deformed_list = []
 

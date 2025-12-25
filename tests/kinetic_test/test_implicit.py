@@ -1,12 +1,14 @@
-import torch
+
 import os
+
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import torch
 import numpy as np
 import time
 import sys
 sys.path.append('.')
 
 import FEA
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cuda'))
@@ -27,7 +29,7 @@ fe = FEA.from_inp(fem)
 fe.solver = FEA.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=0.1)
 # fe.solver._gamma=0.6
 # fe.solver._beta=0.3025
-fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06))
+fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.02))
 # fe.assembly.add_load(FEA.loads.BodyForce(instance_name='final_model', element_name='element-0', force_density=[-9.81e-6, 0, 0, ]))
 
 bc_name = fe.assembly.add_boundary(

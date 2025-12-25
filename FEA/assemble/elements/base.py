@@ -63,7 +63,7 @@ class BaseElement():
             the start index of the stiffness matricx of structural stress
         """
 
-        self.density: torch.Tensor
+        self._density: torch.Tensor
         """
             the density of the element
         """
@@ -73,6 +73,16 @@ class BaseElement():
         """
 
         self.part = part
+
+    @property
+    def density(self) -> torch.Tensor:
+        return self._density
+    
+    @density.setter
+    def density(self, value: np.ndarray | torch.Tensor):
+        if isinstance(value, np.ndarray):
+            value = torch.tensor(value)
+        self._density = value
 
     def get_gaussian_points(self, nodes: torch.Tensor) -> torch.Tensor:
         """
