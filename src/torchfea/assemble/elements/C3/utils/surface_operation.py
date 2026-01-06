@@ -7,12 +7,12 @@ if TYPE_CHECKING:
 
 import torch
 import numpy as np
-import FEA
+import torchfea
 
 
 def divide_surface_elements(part: Part, name_element: str, name_surface: str):
 
-    elems_now: FEA.elements.Element_3D = part.elems[name_element]
+    elems_now: torchfea.elements.Element_3D = part.elems[name_element]
     surface = part.surfaces.get_elements(name_surface)
 
     # find the elements that contain the surface node
@@ -31,16 +31,16 @@ def divide_surface_elements(part: Part, name_element: str, name_surface: str):
     elem_index_other = torch.where(torch.isin(elems_now._elems_index, ind_other_element))[0]
     
 
-    elems_surface = FEA.elements.C3.C3D4(elems=elems_now._elems[elem_index_surface],
+    elems_surface = torchfea.elements.C3.C3D4(elems=elems_now._elems[elem_index_surface],
                                         elems_index=elems_now._elems_index[elem_index_surface])
-    elems_other = FEA.elements.C3.C3D4(elems=elems_now._elems[elem_index_other],
+    elems_other = torchfea.elements.C3.C3D4(elems=elems_now._elems[elem_index_other],
                                         elems_index=elems_now._elems_index[elem_index_other])
 
     return elems_surface, elems_other
 
-def set_surface_2order(fe: FEA.FEAController, name_elems: str, name_surface: str):
+def set_surface_2order(fe: torchfea.FEAController, name_elems: str, name_surface: str):
     
-    element0: FEA.elements.Element_3D = fe.elems[name_elems]
+    element0: torchfea.elements.Element_3D = fe.elems[name_elems]
 
     element = element0.__class__(elems_index=element0._elems_index, elems=element0._elems)
     surface = fe.surface_sets[name_surface]

@@ -4,7 +4,7 @@ import numpy as np
 import sys
 sys.path.append('.')
 
-import FEA
+import torchfea
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 current_path = os.path.dirname(os.path.abspath(__file__))
@@ -14,33 +14,33 @@ torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
 # 1) Read INP
-fem = FEA.FEA_INP()
+fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/C3D4.inp')
 
 # 2) Build controller
-fe = FEA.from_inp(fem)
-fe.solver = FEA.solver.StaticImplicitSolver()
+fe = torchfea.from_inp(fem)
+fe.solver = torchfea.solver.StaticImplicitSolver()
 
 # 3) Load: (optional) keep it simple: no external pressure so spring effect is visible
 # If desired, you can uncomment to add pressure
-fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06))
+fe.assembly.add_load(torchfea.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06))
 
 # 4) Boundary: fix bottom nodes by set name
 fe.assembly.add_boundary(
-    FEA.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom')
+    torchfea.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom')
 )
 
 # 5) Reference point at the top and couple with head nodes
-rp = fe.assembly.add_reference_point(FEA.ReferencePoint([0, 0, 80]))
+rp = fe.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
 fe.assembly.add_constraint(
-    FEA.constraints.Couple(instance_name='final_model', set_nodes_name='surface_0_Head', rp_name=rp)
+    torchfea.constraints.Couple(instance_name='final_model', set_nodes_name='surface_0_Head', rp_name=rp)
 )
 
 # 6) Spring from RP to fixed space point (0,0,100)
 # Note: rest_length=None uses the initial distance (no initial force).
 #       For a visible effect, set rest_length smaller/larger than initial.
 #       Here we choose rest_length=0 to pull the RP toward the target point.
-spring_load = FEA.loads.Spring_RP_Point(rp_name=rp, point=[0, 0, 80], k=1e2, rest_length=0.0)
+spring_load = torchfea.loads.Spring_RP_Point(rp_name=rp, point=[0, 0, 80], k=1e2, rest_length=0.0)
 fe.assembly.add_load(spring_load)
 
 # 7) Solve

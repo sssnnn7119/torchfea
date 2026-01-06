@@ -5,14 +5,14 @@ import time
 import sys
 sys.path.append('.')
 
-import FEA
+import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
-fem = FEA.inp()
+fem = torchfea.inp()
 # fem.Read_INP(
 #     'C:/Users/24391/OneDrive - sjtu.edu.cn/MineData/Learning/Publications/2024Arm/WorkspaceCase/CAE/TopOptRun.inp'
 # )
@@ -23,24 +23,24 @@ fem = FEA.inp()
  
 fem.Read_INP(current_path + '/FreeHex.inp')
 
-fe = FEA.from_inp(fem)
+fe = torchfea.from_inp(fem)
 
 # fe.delete_element('element-1')
 
 fe.nodes[fe.elems['element-0']._elems.flatten().unique(), 0] += 40
 
-# elems = FEA.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
+# elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
 
-# FEA.add_load(Loads.Body_Force_Undeformed(force_volumn_density=[1e-5, 0.0, 0.0], elem_index=FEA.elems['C3D4']._elems_index))
+# torch_fea.add_load(Loads.Body_Force_Undeformed(force_volumn_density=[1e-5, 0.0, 0.0], elem_index=torch_fea.elems['C3D4']._elems_index))
 
-fe.add_load(FEA.loads.Pressure(surface_set='surfacepressure', pressure=0.0005),
+fe.add_load(torchfea.loads.Pressure(surface_set='surfacepressure', pressure=0.0005),
                 name='pressure-1')
 
 bc_dof = fe.node_sets['surface_0_Bottom'] * 3
 bc_dof = np.concatenate([bc_dof, bc_dof + 1, bc_dof + 2])
 bc_name = fe.add_constraint(
-    FEA.constraints.Boundary_Condition(indexDOF=bc_dof,
+    torchfea.constraints.Boundary_Condition(indexDOF=bc_dof,
                                     dispValue=torch.zeros(bc_dof.size)))
                                     
 
@@ -48,20 +48,20 @@ bc_name = fe.add_constraint(
 bc_dof = fe.node_sets['fix'] * 3
 bc_dof = np.concatenate([bc_dof, bc_dof + 1, bc_dof + 2])
 bc_name = fe.add_constraint(
-    FEA.constraints.Boundary_Condition(indexDOF=bc_dof,
+    torchfea.constraints.Boundary_Condition(indexDOF=bc_dof,
                                     dispValue=torch.zeros(bc_dof.size)))
 
 
-# rp = fe.add_reference_point(FEA.ReferencePoint([0, 0, 80]))
+# rp = fe.add_reference_point(torch_fea.ReferencePoint([0, 0, 80]))
 
 indexNodes = fe.node_sets['surface_0_Head']
-# FEA.add_constraint(
+# torch_fea.add_constraint(
 #     Constraints.Couple(
 #         indexNodes=indexNodes,
 #         rp_index=2))
-# fe.add_constraint(FEA.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
+# fe.add_constraint(torch_fea.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
 
-# fe.add_load(FEA.loads.Contact(surface_name1='surface_0_All', surface_name2='surfaceblock'))
+# fe.add_load(torch_fea.loads.Contact(surface_name1='surface_0_All', surface_name2='surfaceblock'))
 
 t1 = time.time()
 

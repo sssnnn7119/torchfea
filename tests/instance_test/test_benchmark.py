@@ -5,14 +5,14 @@ import time
 import sys
 sys.path.append('.')
 
-import FEA
+import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
-fem = FEA.FEA_INP()
+fem = torchfea.FEA_INP()
 # fem.Read_INP(
 #     'C:/Users/24391/OneDrive - sjtu.edu.cn/MineData/Learning/Publications/2024Arm/WorkspaceCase/CAE/TopOptRun.inp'
 # )
@@ -23,28 +23,28 @@ fem = FEA.FEA_INP()
  
 fem.read_inp(current_path + '/C3D4.inp')
 
-fe = FEA.from_inp(fem)
+fe = torchfea.from_inp(fem)
 
 ins1 = fe.assembly.get_instance('final_model')
 
-ins2 = FEA.Instance(fe.assembly.get_part('final_model'))
+ins2 = torchfea.Instance(fe.assembly.get_part('final_model'))
 fe.assembly.add_instance(ins2, name='final_model2')
 ins2._translation = torch.tensor([0.0, -20.0, -20.0])
 ins2._rotation = torch.tensor([0.0, 0.0, np.pi/2])
 
-fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model2', surface_set='surface_1_All', pressure=0.06),
+fe.assembly.add_load(torchfea.loads.Pressure(instance_name='final_model2', surface_set='surface_1_All', pressure=0.06),
                 name='pressure-1')
 
 bc_name = fe.assembly.add_boundary(
-    FEA.boundarys.Boundary_Condition(instance_name='final_model2', set_nodes_name='surface_0_Bottom'))
+    torchfea.boundarys.Boundary_Condition(instance_name='final_model2', set_nodes_name='surface_0_Bottom'))
 bc_name = fe.assembly.add_boundary(
-    FEA.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom'))
+    torchfea.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom'))
 
-rp = fe.assembly.add_reference_point(FEA.ReferencePoint([0, -20, 60]))
+rp = fe.assembly.add_reference_point(torchfea.ReferencePoint([0, -20, 60]))
 
-fe.assembly.add_constraint(FEA.constraints.Couple(instance_name='final_model2', set_nodes_name='surface_0_Head', rp_name=rp))
+fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_model2', set_nodes_name='surface_0_Head', rp_name=rp))
 
-fe.assembly.add_load(FEA.loads.Contact(instance_name1='final_model', instance_name2='final_model2', surface_name1='surface_0_All', surface_name2='surface_0_All'))
+fe.assembly.add_load(torchfea.loads.Contact(instance_name1='final_model', instance_name2='final_model2', surface_name1='surface_0_All', surface_name2='surface_0_All'))
 
 
 t1 = time.time()

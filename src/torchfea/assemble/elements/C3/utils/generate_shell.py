@@ -233,16 +233,16 @@ def add_shell_elements_to_model(fe: FEA_Main, nodes_new: torch.Tensor,
     Returns:
         FEA.Main.FEA_Main: Updated FEA model with the shell elements added
     """
-    import FEA
+    import torchfea
     # Create a new FEA_Main instance with the updated nodes
-    new_fe = FEA.controller.FEAController(nodes_new)
+    new_fe = torchfea.controller.FEAController(nodes_new)
 
     # Copy all the original elements from the old model
     for elem_name, elem_obj in fe.elems.items():
         new_fe.elems[elem_name] = elem_obj
 
     # Create new C3D6 elements and add them to the model
-    new_fe.add_element(FEA.elements.C3.C3D6(elems=c3d6_elements,
+    new_fe.add_element(torchfea.elements.C3.C3D6(elems=c3d6_elements,
                                             elems_index=c3d6_indices),
                        name=name_new_elements)    # Copy node sets, element sets, and surface sets
     for name, node_set in fe.node_sets.items():
@@ -261,7 +261,7 @@ def add_shell_elements_to_model(fe: FEA_Main, nodes_new: torch.Tensor,
 
     # Copy reference points
     for rp_name, rp in fe.reference_points.items():
-        new_rp = FEA.ReferencePoint(rp.node)
+        new_rp = torchfea.ReferencePoint(rp.node)
         new_fe.add_reference_point(new_rp, name=rp_name)
 
     # Copy loads

@@ -8,13 +8,13 @@ import time
 import sys
 sys.path.append('.')
 
-import FEA
+import torchfea
 current_path = os.path.dirname(os.path.abspath(__file__))
 
 torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
-fem = FEA.FEA_INP()
+fem = torchfea.FEA_INP()
 # fem.Read_INP(
 #     'C:/Users/24391/OneDrive - sjtu.edu.cn/MineData/Learning/Publications/2024Arm/WorkspaceCase/CAE/TopOptRun.inp'
 # )
@@ -25,21 +25,21 @@ fem = FEA.FEA_INP()
  
 fem.read_inp(current_path + '/C3D4Less.inp')
 
-fe = FEA.from_inp(fem)
-fe.solver = FEA.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=0.1)
+fe = torchfea.from_inp(fem)
+fe.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=0.1)
 # fe.solver._gamma=0.6
 # fe.solver._beta=0.3025
-fe.assembly.add_load(FEA.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.02))
-# fe.assembly.add_load(FEA.loads.BodyForce(instance_name='final_model', element_name='element-0', force_density=[-9.81e-6, 0, 0, ]))
+fe.assembly.add_load(torchfea.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.02))
+# fe.assembly.add_load(torch_fea.loads.BodyForce(instance_name='final_model', element_name='element-0', force_density=[-9.81e-6, 0, 0, ]))
 
 bc_name = fe.assembly.add_boundary(
-    FEA.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom'))
+    torchfea.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom'))
 
-# rp = fe.assembly.add_reference_point(FEA.ReferencePoint([0, 0, 80]))
+# rp = fe.assembly.add_reference_point(torch_fea.ReferencePoint([0, 0, 80]))
 
 # indexNodes = fem.part['final_model'].sets_nodes['surface_0_Head']
 
-# fe.assembly.add_constraint(FEA.constraints.Couple(instance_name='final_model', indexNodes=indexNodes, rp_name=rp))
+# fe.assembly.add_constraint(torch_fea.constraints.Couple(instance_name='final_model', indexNodes=indexNodes, rp_name=rp))
 
 
 

@@ -6,7 +6,7 @@ import time
 import sys
 sys.path.append('.')
 import scipy.sparse as sp
-import FEA
+import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -22,31 +22,31 @@ def show_quiver3d(R, N, hold=False):
     if not hold:
         mlab.show()
 
-fem = FEA.FEA_INP()
+fem = torchfea.FEA_INP()
 
 fem.Read_INP(current_path + '/TopOptRun.inp')
 
-fe = FEA.from_inp(fem)
+fe = torchfea.from_inp(fem)
 
-fe.add_load(FEA.loads.Pressure(surface_set='surface_1_All', pressure=0.06),
+fe.add_load(torchfea.loads.Pressure(surface_set='surface_1_All', pressure=0.06),
                 name='pressure-1')
 
 bc_dof = np.array(
     list(fem.part['final_model'].sets_nodes['surface_0_Bottom'])) * 3
 bc_dof = np.concatenate([bc_dof, bc_dof + 1, bc_dof + 2])
 bc_name = fe.add_constraint(
-    FEA.constraints.Boundary_Condition(indexDOF=bc_dof,
+    torchfea.constraints.Boundary_Condition(indexDOF=bc_dof,
                                     dispValue=torch.zeros(bc_dof.size)))
 
-rp = fe.add_reference_point(FEA.ReferencePoint([0, 0, 80]))
+rp = fe.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
 
 indexNodes = np.where((abs(fe.nodes[:, 2] - 80)
                         < 0.1).cpu().numpy())[0]
-# FEA.add_constraint(
+# torch_fea.add_constraint(
 #     Constraints.Couple(
 #         indexNodes=indexNodes,
 #         rp_index=2))
-fe.add_constraint(FEA.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
+fe.add_constraint(torchfea.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
 
 
 fe.solve(tol_error=0.001)

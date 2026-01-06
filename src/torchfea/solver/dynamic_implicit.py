@@ -175,7 +175,7 @@ class DynamicImplicitSolver(BaseSolver):
             print('time:%.8f, deltaT:%.8f' % (self._time_list[-1], self._deltaT))
             t0 = time.time()
 
-            GC_pre = self._GC_list[-1] + self._deltaT * self._GV_list[-1] + 0.25 * (self._deltaT ** 2) * self._GA_list[-1]
+            GC_pre = self._GC_list[-1] + self._deltaT * self._GV_list[-1] + (self._deltaT ** 2) * self._GA_list[-1] * (1 - 2 * self._beta) / 2
 
             GC_now = self._solve_iteration(GC0=self._GC_list[-1],
                                             GC_pre=GC_pre,

@@ -611,7 +611,7 @@ def visualize_integration_points():
     plt.close('all')
 
 def main():
-    print("Generating visualizations for FEA elements...")
+    print("Generating visualizations for torch_fea elements...")
     # Create output directory if it doesn't exist
     import os
     if not os.path.exists("element_visualizations"):

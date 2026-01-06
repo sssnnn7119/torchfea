@@ -7,9 +7,9 @@ if TYPE_CHECKING:
 
 import torch
 import numpy as np
-import FEA
+import torchfea
 
-from FEA.assemble.reference_points import ReferencePoint
+from torchfea.assemble.reference_points import ReferencePoint
 
 from .. import C3D4, C3D6, C3D8, C3D10, C3D15, C3D20
 
@@ -357,7 +357,7 @@ def convert_to_second_order(fe: FEA_Main, element_names: list[str]=None)-> FEA_M
         combined_nodes = torch.cat([original_nodes, new_nodes])
     
     # Create a new FEA model with the updated nodes
-    new_fe = FEA.controller.FEAController(combined_nodes)
+    new_fe = torchfea.controller.FEAController(combined_nodes)
     
     # Copy non-converted elements from the original model
     for elem_name, elem_obj in fe.elems.items():
@@ -402,7 +402,7 @@ def convert_to_second_order(fe: FEA_Main, element_names: list[str]=None)-> FEA_M
     
     # Copy reference points
     for rp_name, rp in fe.reference_points.items():
-        new_rp = FEA.ReferencePoint(rp.node)
+        new_rp = torchfea.ReferencePoint(rp.node)
         new_fe.add_reference_point(new_rp, name=rp_name)
     
     # Copy loads

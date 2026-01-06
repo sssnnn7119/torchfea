@@ -5,7 +5,7 @@ import time
 import sys
 sys.path.append(os.getcwd())
 
-import FEA
+import torchfea
 from mayavi import mlab
 import vtk
 from mayavi import mlab
@@ -16,7 +16,7 @@ torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
 def fea_inp(inp_name: str):
-    fem = FEA.inp()
+    fem = torchfea.inp()
     # fem.Read_INP(
     #     'C:/Users/24391/OneDrive - sjtu.edu.cn/MineData/Learning/Publications/2024Arm/WorkspaceCase/CAE/TopOptRun.inp'
     # )
@@ -27,8 +27,8 @@ def fea_inp(inp_name: str):
 
     fem.Read_INP(current_path + '/'+inp_name+'.inp')
 
-    fe = FEA.from_inp(fem)
-    elems_now: FEA.elements.Element_3D = fe.elems['element-0']
+    fe = torchfea.from_inp(fem)
+    elems_now: torchfea.elements.Element_3D = fe.elems['element-0']
     # elems_now.surf_order = torch.ones([elems_now._elems.shape[0], 6], dtype=torch.int64) * 1
 
     # elems_now.surf_order[:elems_now._elems.shape[0] // 20] = 2
@@ -38,18 +38,18 @@ def fea_inp(inp_name: str):
                             < 0.1).cpu().numpy())[0] * 3
     bc_dof = np.concatenate([bc_dof, bc_dof + 1, bc_dof + 2])
     fe.add_constraint(
-        FEA.constraints.Boundary_Condition(indexDOF=bc_dof,
+        torchfea.constraints.Boundary_Condition(indexDOF=bc_dof,
                                         dispValue=torch.zeros(bc_dof.size)))
 
-    rp = fe.add_reference_point(FEA.ReferencePoint([0, 0, 100]))
+    rp = fe.add_reference_point(torchfea.ReferencePoint([0, 0, 100]))
     indexNodes = np.where((abs(fe.nodes[:, 2] - 100)
                             < 0.1).cpu().numpy())[0]
 
 
-    fe.add_constraint(FEA.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
+    fe.add_constraint(torchfea.constraints.Couple(indexNodes=indexNodes, rp_name=rp))
     # fe.add_load(
-    #     FEA.loads.Concentrate_Force(rp_name=rp, force=[50., 0., 0.]))
-    fe.add_load(FEA.loads.BodyForce(element_name='element-0', force_density=[9.8e-6,0,0]))
+    #     torch_fea.loads.Concentrate_Force(rp_name=rp, force=[50., 0., 0.]))
+    fe.add_load(torchfea.loads.BodyForce(element_name='element-0', force_density=[9.8e-6,0,0]))
     t1 = time.time()
     fe.initialize()
 
