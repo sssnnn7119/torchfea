@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from .base import BaseLoad
-from ..elements.C3 import Element_3D
+from ..elements.dimension3 import Element_3D
 class BodyForce(BaseLoad):
 
     def __init__(self, instance_name: str, element_name: str, force_density: list[float] = [0.0, 0.0, -9.81e-6]) -> None:

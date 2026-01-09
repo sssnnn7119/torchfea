@@ -68,7 +68,7 @@ def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
                             )
                 
                 elems_now.set_materials(materials_now)
-                elems_now.set_density(inp.part[part_name].elems_material[elems[key][:, 0]][index_now][:, 1])
+                elems_now.density = (inp.part[part_name].elems_material[elems[key][:, 0]][index_now][:, 1])
                 
                 part_now.add_element(elems_now)
  

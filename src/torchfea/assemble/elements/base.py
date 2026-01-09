@@ -114,15 +114,6 @@ class BaseElement():
         """
         
         self.materials = materials
-
-    def set_density(self, density: torch.Tensor |float):
-        """
-            set the density of the element
-        """
-        if type(density) == float:
-            density = torch.tensor([density], dtype=torch.float32)
-
-        self.density = density
         
     def set_required_DoFs(
             self, RGC_remain_index: np.ndarray) -> np.ndarray:

@@ -30,7 +30,7 @@ class FEA_INP():
             # self.num_elems_2D = 0
             # section = []
 
-        def read(self, origin_data: list[str], ind):
+        def read(self, origin_data: list[str], ind: int):
 
             self.elems = {}
             self.sets_nodes = {}
@@ -42,10 +42,10 @@ class FEA_INP():
             self.surfaces_tri = {}
             while ind < len(origin_data):
                 now = origin_data[ind]
-                if len(now) > 9 and now[0:9] == '*End Part':
+                if len(now) > 9 and now[0:9].lower() == '*end part':
                     break
                 # case element
-                if len(now) == 22 and now[0:21] == '*Element, type=C3D10H':
+                if len(now) >= 22 and now[0:21].lower() == '*element, type=c3d10h':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -61,7 +61,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) == 21 and now[0:20] == '*Element, type=C3D10':
+                if len(now) >= 21 and now[0:20].lower() == '*element, type=c3d10':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -77,7 +77,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) == 21 and now[0:20] == '*Element, type=C3D15':
+                if len(now) >= 21 and now[0:20].lower() == '*element, type=c3d15':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -93,7 +93,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
                 
-                if len(now) == 21 and now[0:20] == '*Element, type=C3D20':
+                if len(now) >= 21 and now[0:20].lower() == '*element, type=c3d20':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -112,7 +112,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
                 
-                if len(now) == 21 and now[0:20] == '*Element, type=C3D8R':
+                if len(now) >= 21 and now[0:20].lower() == '*element, type=c3d8r':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -128,7 +128,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) == 21 and now[0:20] == '*Element, type=C3D4H':
+                if len(now) >= 21 and now[0:20].lower() == '*element, type=c3d4h':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -144,7 +144,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) == 20 and now[0:19] == '*Element, type=C3D4':
+                if len(now) >= 20 and now[0:19].lower() == '*element, type=c3d4':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -160,7 +160,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
                 
-                if len(now) == 20 and now[0:19] == '*Element, type=C3D8':
+                if len(now) >= 20 and now[0:19].lower() == '*element, type=c3d8':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -176,7 +176,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) == 20 and now[0:19] == '*Element, type=C3D6':
+                if len(now) >= 20 and now[0:19].lower() == '*element, type=c3d6':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -192,7 +192,7 @@ class FEA_INP():
                     self.num_elems_3D += ind1 - ind0
                     continue
 
-                if len(now) >= 17 and now[0:17] == '*Element, type=S3':
+                if len(now) >= 17 and now[0:17].lower() == '*element, type=s3':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -210,7 +210,7 @@ class FEA_INP():
 
                 # case node set
                 if len(now
-                    ) >= 12 and now[0:12] == '*Nset, nset=':
+                    ) >= 12 and now[0:12].lower() == '*nset, nset=':
                     # name = now[12:].replace('\n', '').strip()
                     data_now = now.split('=')[1].split(',')
                     for ii in range(len(data_now)):
@@ -241,7 +241,7 @@ class FEA_INP():
 
                 # case element set
                 if len(now) >= 14 and now[
-                        0:14] == '*Elset, elset=':
+                        0:14].lower() == '*elset, elset=':
                     # name = now[14:].replace('\n', '').strip()
                     data_now = now.split('=')[1].split(',')
                     for ii in range(len(data_now)):
@@ -272,12 +272,12 @@ class FEA_INP():
                         continue
                 
                 # case surfaces
-                if len(now) >= 8 and now[0:8] == '*Surface':
+                if len(now) >= 8 and now[0:8].lower() == '*surface':
                     data_now = now.split('=')
                     ind += 1
                     if len(self.elems.keys()) == 0:
                         continue
-                    if data_now[1].split(',')[0].strip()[:7] == 'ELEMENT':
+                    if data_now[1].split(',')[0].strip()[:7].lower() == 'element':
                         name = data_now[2].strip()
                         self.surfaces[name] = []
                         surfaceList = []
@@ -331,7 +331,7 @@ class FEA_INP():
                     continue
 
                 # case node
-                if len(now) >= 5 and now[0:5] == '*Node':
+                if len(now) >= 5 and now[0:5].lower() == '*node':
                     ind += 1
                     ind0 = ind
                     now = origin_data[ind]
@@ -347,7 +347,7 @@ class FEA_INP():
                     continue
 
                 # case section
-                if len(now) >= 11 and now[0:11] == '** Section:':
+                if len(now) >= 11 and now[0:11].lower() == '** section:':
                     name = now.split(':')[1].strip()
                     ind += 1
                     now = origin_data[ind]
@@ -357,7 +357,7 @@ class FEA_INP():
                     section.append([section_set, section_material])
 
                 # case finished
-                if len(now) >= 9 and now[0:9] == '*End Part':
+                if len(now) >= 9 and now[0:9].lower() == '*end part':
                     break
 
                 ind += 1

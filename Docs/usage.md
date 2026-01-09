@@ -59,7 +59,9 @@ controller = FEA.from_inp(fem)
     FEA.boundarys.Boundary_Condition(instance_name='final_model', index_nodes=bc_nodes)
   )
   ```
+
   - 若需对参考点施加边界（例如固定全部 6 个自由度），可用：
+
   ```python
   rp = controller.assembly.add_reference_point(FEA.ReferencePoint([0, 0, 80]))
   controller.assembly.add_boundary(
@@ -97,7 +99,6 @@ controller = FEA.from_inp(fem)
                           force_density=[-9.81e-6, 0, 0])
   )
   ```
-
 - 弹簧载荷（新）：
 
   - 参考点-参考点（RP-RP）弹簧：
@@ -109,7 +110,6 @@ controller = FEA.from_inp(fem)
         FEA.loads.Spring_RP_RP(rp_name1=rp1, rp_name2=rp2, k=1e3, rest_length=None)  # rest_length 默认初始距离
     )
     ```
-
   - 参考点-空间点（RP-Point）弹簧：
 
     ```python
@@ -183,10 +183,11 @@ T_hist  = controller.solver._time_list
   np.save(out_dir + '/explicitGV.npy', np.array([x.tolist() for x in controller.solver._GV_list], dtype=np.float32))
   np.save(out_dir + '/explicitGA.npy', np.array([x.tolist() for x in controller.solver._GA_list], dtype=np.float32))
   ```
-- 可视化（Mayavi，见多处 tests）：
+- 可视化（PyVista，见多处 tests）：
 
   ```python
-  from mayavi import mlab
+  import pyvista as pv
+  import numpy as np
 
   ins = controller.assembly.get_instance('final_model')
   U = controller.assembly.RGC[ins._RGC_index].cpu().numpy()
@@ -197,8 +198,12 @@ T_hist  = controller.solver._time_list
   tris = ins.surfaces.get_elements('surface_0_All')[0]._elems[:, :3].cpu().numpy()
 
   scalars = (U**2).sum(axis=1)**0.5
-  mlab.triangular_mesh(deformed[:, 0], deformed[:, 1], deformed[:, 2], tris, scalars=scalars)
-  mlab.show()
+  faces = np.column_stack([np.full(len(tris), 3), tris])
+  mesh = pv.PolyData(deformed, faces)
+  mesh['displacement'] = scalars
+  plotter = pv.Plotter()
+  plotter.add_mesh(mesh, scalars='displacement')
+  plotter.show()
   ```
 
 ## 五、常见技巧与排错

@@ -49,7 +49,7 @@ class NeoHookean(Materials_Base):
         Jneg = Jneg.view(J.shape[0], J.shape[1], 1, 1)
         I1 = I1.view(J.shape[0], J.shape[1], 1, 1)
 
-        if self.mu.dim() == 0:
+        if self.mu.dim() == 0 or self.mu.shape[0] == 1:
             mu = self.mu.view(1, 1, 1, 1)
             kappa = self.kappa.view(1, 1, 1, 1)
         else:
