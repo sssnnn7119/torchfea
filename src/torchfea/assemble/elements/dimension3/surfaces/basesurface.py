@@ -235,3 +235,13 @@ class BaseSurface():
         """
         return self._elems
     
+    @property
+    def trimesh(self) -> torch.Tensor:
+        """
+        Get the triangular mesh representation of the surface. 
+        This property should be overridden in subclasses if needed.
+
+        Returns:
+            torch.Tensor: The triangular mesh elements. size: [num_tri_elems, 3]
+        """
+        return self._elems

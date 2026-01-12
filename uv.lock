@@ -1071,7 +1071,7 @@ wheels = [
 ]
 
 [[package]]
-name = "torch-fea"
+name = "torchfea"
 version = "2.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -58,9 +58,8 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 
-fe.solve(tol_error=0.001)
+fearesult = fe.solve(tol_error=0.001)
 
-GC0 = fe.assembly.GC.clone()
-jacobian = fe.solver.get_jacobian(GC_now=fe.assembly.GC)
+jacobian = fe.solver.get_jacobian(result=fearesult)
 
 assert False

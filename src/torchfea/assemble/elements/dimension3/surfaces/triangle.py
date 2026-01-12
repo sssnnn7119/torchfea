@@ -98,3 +98,18 @@ class T6(BaseSurface):
         This property returns the element connectivity for T6 surface elements.
         """
         return self._elems[:, [0, 3, 1, 4, 2, 5]]
+    
+    @property
+    def trimesh(self) -> torch.Tensor:
+        """
+        Get the triangular mesh representation of the T6 surface.
+        This property returns the triangular elements derived from the T6 elements.
+
+        Returns:
+            torch.Tensor: The triangular mesh elements. size: [num_tri_elems, 3]
+        """
+        tri_elems_1 = self._elems[:, [0, 3, 5]]
+        tri_elems_2 = self._elems[:, [1, 4, 3]]
+        tri_elems_3 = self._elems[:, [2, 5, 4]]
+        tri_elems_4 = self._elems[:, [3, 4, 5]]
+        return torch.cat([tri_elems_1, tri_elems_2, tri_elems_3, tri_elems_4], dim=0)

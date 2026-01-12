@@ -37,8 +37,6 @@ fem.read_inp(current_path + '/C3D4Less.inp')  # 某个 Abaqus INP
 controller = FEA.from_inp(fem)
 ```
 
-说明：部分较早脚本使用 `Read_INP`（首字母大写）与 `FEA.inp()`，推荐使用 `FEA.FEA_INP().read_inp(...)` 的形式。
-
 ## 二、添加载荷与约束
 
 在 `controller.assembly` 上进行模型修改（tests 多数使用 `instance_name='final_model'`）：

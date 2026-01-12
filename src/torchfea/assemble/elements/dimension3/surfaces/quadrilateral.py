@@ -55,6 +55,15 @@ class Q4(BaseSurface):
         
         # Pre-load Gaussian points for Q4 surface
         self._pre_load_gaussian(pp, self._part.nodes)
+    
+    @property
+    def trimesh(self) -> torch.Tensor:
+        """
+        Get the triangular mesh representation of the surface.
+        This property returns the element connectivity for Q4 surface elements.
+        """
+        return self._elems[:, [0, 1, 2],
+                           [0, 2, 3]]
 
 class Q8(BaseSurface):
     """
@@ -116,3 +125,16 @@ class Q8(BaseSurface):
         This property returns the element connectivity for Q8 surface elements.
         """
         return self._elems[:, [0, 4, 1, 5, 2, 6, 3, 7]]
+    
+    @property
+    def trimesh(self) -> torch.Tensor:
+        """
+        Get the triangular mesh representation of the surface.
+        This property returns the element connectivity for Q8 surface elements.
+        """
+        return self._elems[:, [0, 4, 7],
+                           [1, 5, 4],
+                           [2, 6, 5],
+                           [3, 7, 6],
+                           [7, 4, 5],
+                           [7, 5, 6]]

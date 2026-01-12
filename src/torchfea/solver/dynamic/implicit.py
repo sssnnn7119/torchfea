@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .. import Assembly
+    from ... import Assembly
 import time
 import torch
-from . import _linear_solver
-from .basesolver import BaseSolver
+from .. import _linear_solver
+from ..basesolver import BaseSolver
 
 class DynamicImplicitSolver(BaseSolver):
 

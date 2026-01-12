@@ -13,14 +13,6 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 torch.set_default_device(torch.device('cuda'))
 torch.set_default_dtype(torch.float64)
 
-def show_quiver3d(R, N, hold=False):
-    from mayavi import mlab
-    r = R.detach().cpu().numpy()
-    n = N.detach().cpu().numpy()
-    mlab.quiver3d(r[0], r[1], r[2], n[0], n[1], n[2])
-
-    if not hold:
-        mlab.show()
 
 fem = torchfea.FEA_INP()
 name = 'C3D4'
@@ -36,6 +28,7 @@ fe.solver = torchfea.solver.StaticImplicitSolver()
 
 fe.assembly.add_load(torchfea.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06),
                 name='pressure-1')
+                
 # fe.assembly.add_load(torch_fea.loads.ContactSelf(surface_name='surface_0_All', penalty_distance_g=10, penalty_threshold_h=5.5))
 fe.assembly.add_load(torchfea.loads.ContactSelf(instance_name='final_model',surface_name='surface_0_All'))
 fe.assembly.add_load(torchfea.loads.ContactSelf(instance_name='final_model',surface_name='surface_1_All'))

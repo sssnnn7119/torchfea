@@ -11,6 +11,8 @@ from . import elements
 from .obj_base import BaseObj
 from .elements import BaseSurface, BaseElement, surfaces
 
+import pyvista as pv
+
 class _Surfaces():
     """
     Class representing a set of surfaces in the finite element model.
@@ -46,6 +48,25 @@ class _Surfaces():
             list[BaseSurface]: The list of surface elements.
         """
         return self._surface_elements.get(name, [])
+    
+    def get_trimesh(self, name: str) -> torch.Tensor:
+        """
+        Get the triangles of a surface set by name.
+
+        Args:
+            name (str): Name of the surface set.
+
+        Returns:
+            torch.Tensor: Triangles of the surface set.
+        """
+        surface_elements = self.get_elements(name)
+        if len(surface_elements) == 0:
+            raise ValueError(f"Surface set '{name}' not found in the model.")
+        
+        triangles = []
+        for se in surface_elements:
+            triangles.append(se.trimesh)
+        return torch.cat(triangles, dim=0)
 
     def __getitem__(self, key: str):
         """
@@ -344,7 +365,12 @@ class Instance(BaseObj):
         self._RGC_requirements = self.part.nodes.shape
 
         self._translation: torch.Tensor = torch.zeros(3)
+        """the translation vector of the instance"""
         self._rotation: torch.Tensor = torch.randn(3) * 0.0
+        """the rotation vector of the instance defined in exponential map"""
+
+        self.external_surface: str = ''
+        """the name of the external surface for visualization"""
 
     @property
     def rotation_matrix(self) -> torch.Tensor:
@@ -433,3 +459,28 @@ class Instance(BaseObj):
     def extract_surfaces(self, name: str) -> list[BaseSurface]:
         surfaces = self.part.extract_surfaces(name)
         return surfaces
+
+    def get_mesh(self, RGC: list[torch.Tensor] = None, surf_name: str = None) -> pv.PolyData:
+        """
+        Get the mesh of the instance for visualization.
+        Args:
+            surf_name (str, optional): Name of the surface set to visualize. 
+                If None, use the external_surface attribute. Defaults to None.
+        Returns:
+            pv.PolyData: The mesh of the instance.
+        """
+        import pyvista as pv
+
+        if surf_name is None:
+            surf_name = self.external_surface
+        if surf_name == '':
+            return pv.PolyData()
+        
+        triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
+        nodes_transformed = self.nodes.cpu().numpy()
+
+        if RGC is not None:
+            nodes_transformed += RGC[self._RGC_index].cpu().numpy()
+
+        mesh = pv.PolyData(nodes_transformed, np.hstack([ np.full((triangles.shape[0], 1), 3), triangles ]))
+        return mesh

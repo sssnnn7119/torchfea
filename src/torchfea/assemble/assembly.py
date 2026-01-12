@@ -6,6 +6,7 @@ from . import Instance
 from . import ReferencePoint
 from . import loads, constraints, boundarys
 from .part import _Surfaces, Part
+import pyvista as pv
 
 class Assembly:
     def __init__(self):
@@ -71,33 +72,60 @@ class Assembly:
         self.mass_matrix_values: torch.Tensor
         """The values of the mass matrix"""
 
-    # region data IO
-
-    def get_load_parameters(self) -> dict[str, torch.Tensor]:
+    # region visualization
+    def get_meshes(self, GC: torch.Tensor = None) -> dict[str, pv.PolyData]:
         """
-        Get the load parameters.
-
-        Returns:
-            dict: A dictionary containing load names as keys and their parameters as values.
-        """
-        load_params = {}
-        for load_name, load in self._loads.items():
-            load_params[load_name] = load._parameters.clone().detach()
-        return load_params
-    
-    def set_load_parameters(self, load_params: dict[str, torch.Tensor]) -> None:
-        """
-        Set the load parameters.
+        Get the meshes of all instances in the assembly.
 
         Args:
-            load_params (dict): A dictionary containing load names as keys and their parameters as values.
-        """
-        for load_name, params in load_params.items():
-            if load_name in self._loads:
-                self._loads[load_name]._parameters = params.clone().detach()
-            else:
-                raise ValueError(f"Load with name {load_name} does not exist in the assembly.")
+            GC (torch.Tensor, optional): The generalized coordinates to use for visualization. Defaults to None.
 
+        Returns:
+            dict[str, pv.PolyData]: A dictionary with instance names as keys and their corresponding meshes as values.
+        """
+        meshes = {}
+        for ins_name, ins in self._instances.items():
+            if GC is not None:
+                RGC = self._GC2RGC(GC)
+            else:
+                RGC = None
+            mesh = ins.get_mesh(RGC=RGC)
+            meshes[ins_name] = mesh
+        return meshes
+
+    def show_ins(self, ins_name: str, GC: torch.Tensor = None):
+        """
+        Visualize the specified instance.
+
+        Args:
+            ins_name (str): The name of the instance to visualize.
+            GC (torch.Tensor, optional): The generalized coordinates to use for visualization. Defaults to None.
+        """
+        if GC is not None:
+            RGC = self._GC2RGC(GC)
+        else:
+            RGC = None
+        mesh = self._instances[ins_name].get_mesh(RGC=RGC)
+        pv.global_theme.allow_empty_mesh = True
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
+        plotter.add_legend()
+        plotter.show()
+
+    def show_all(self, GC: torch.Tensor = None):
+        """
+        Visualize all instances in the assembly.
+
+        Args:
+            GC (torch.Tensor, optional): The generalized coordinates to use for visualization. Defaults to None.
+        """
+        meshes = self.get_meshes(GC=GC)
+        pv.global_theme.allow_empty_mesh = True
+        plotter = pv.Plotter()
+        for ins_name, mesh in meshes.items():
+            plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
+        plotter.add_legend()
+        plotter.show()
     # endregion
 
     # region Initialization
@@ -707,6 +735,34 @@ class Assembly:
             None
         """
         self._loads.clear()
+
+    def get_load_parameters(self) -> dict[str, torch.Tensor]:
+        """
+        Get parameters about all loads in the FEA model.
+
+        Returns:
+            dict: A dictionary where keys are load names and values are numpy arrays containing load parameters.
+        """
+        load_info = {}
+        for name, load in self._loads.items():
+            load_info[name] = load._parameters
+        return load_info
+    
+    def set_load_parameters(self, load_info: dict[str, torch.Tensor]):
+        """
+        Set parameters for loads in the FEA model.
+
+        Args:
+            load_info (dict): A dictionary where keys are load names and values are torch tensors containing load parameters.
+
+        Returns:
+            None
+        """
+        for name, info in load_info.items():
+            if name in self._loads:
+                self._loads[name]._parameters = info
+            else:
+                raise ValueError(f"Load '{name}' not found in the model.")
 
     def add_constraint(self,
                        constraint: constraints.BaseConstraint,

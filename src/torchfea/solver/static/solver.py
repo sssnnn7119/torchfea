@@ -5,11 +5,12 @@ from typing import Optional, TYPE_CHECKING
 import pypardiso
 
 if TYPE_CHECKING:
-    from .. import Assembly
+    from ... import Assembly
 import time
 import torch
-from . import _linear_solver
-from .basesolver import BaseSolver
+from .. import _linear_solver
+from ..basesolver import BaseSolver
+from .result import StaticResult
 
 class StaticImplicitSolver(BaseSolver):
 
@@ -75,21 +76,28 @@ class StaticImplicitSolver(BaseSolver):
         print('max_error:%.4e' % (R.abs().max()))
         print('---' * 8, 'FEA Finished', '---' * 8, '\n')
 
-        return self.GC
+        # build the result object
+        return StaticResult(GC=self.GC, load_params=self.assembly.get_load_parameters())
    
-    def get_jacobian(self, GC_now: torch.Tensor) -> torch.Tensor:
+    def get_jacobian(self, result: StaticResult) -> torch.Tensor:
         """
         Calculate the Jacobian matrix for the current configuration.
 
         Args:
-            GC_now (torch.Tensor): Current generalized coordinates.
+            result (StaticResult): The result object containing the current state.
         Returns:
             torch.Tensor: The Jacobian matrix.
         """
+        # set the load parameters to the assembly
+        self.assembly.set_load_parameters(result.load_params)
+        
+        # get the current load parameters as a single tensor
         total_params_list = []
         for load in self.assembly._loads.values():
             total_params_list.append(load._parameters.flatten().detach().clone())
         total_params = torch.cat(total_params_list, dim=0)
+
+        # define the closure function to compute R
         def closure_R(total_params: torch.Tensor):
 
             index_now = 0
@@ -97,7 +105,7 @@ class StaticImplicitSolver(BaseSolver):
                 param_len = load._parameters.numel()
                 load._parameters = total_params[index_now:index_now+param_len].reshape(load._parameters.shape)
                 index_now += param_len
-            R = self.assembly.assemble_force(GC=GC_now)
+            R = self.assembly.assemble_force(GC=result.GC.to(self.assembly.device))
 
             # remove the leaf parameters
             for load in self.assembly._loads.values():
@@ -105,18 +113,19 @@ class StaticImplicitSolver(BaseSolver):
 
             return R
         
+
         from torch.autograd.functional import jvp
         
         num_params = total_params.numel()
         if num_params > 0:
             Rdp_cols = []
-            # Create identity matrix to project gradients one by one (column-wise)
-            basis_vectors = torch.eye(num_params, device=total_params.device, dtype=total_params.dtype)
-            
+
             for i in range(num_params):
                 # Compute Jacobian-Vector Product for the i-th parameter
                 # This computes the i-th column of the Jacobian
-                _, col = jvp(closure_R, total_params, v=basis_vectors[i], create_graph=False)
+                basis_vector_now = torch.zeros_like(total_params)
+                basis_vector_now[i] = 1.0
+                _, col = jvp(closure_R, total_params, v=basis_vector_now, create_graph=False)
                 Rdp_cols.append(col)
             
             Rdp = torch.stack(Rdp_cols, dim=1)
@@ -126,23 +135,23 @@ class StaticImplicitSolver(BaseSolver):
             Rdp = torch.zeros((R_dummy.shape[0], 0), device=total_params.device, dtype=total_params.dtype)
 
 
-        K_indices, K_values = self.assembly.assemble_Stiffness_Matrix(GC=GC_now)[1:]
+        K_indices, K_values = self.assembly.assemble_Stiffness_Matrix(GC=result.GC)[1:]
         import scipy.sparse as sp
         K_sp = sp.coo_matrix(
             (K_values.detach().cpu().numpy(), (K_indices[0].cpu().numpy(),
                                         K_indices[1].cpu().numpy()))).tocsr()
         jacobian = -pypardiso.spsolve(K_sp, Rdp.detach().cpu().numpy())
+        jacobian = jacobian.reshape(-1, num_params) # Shape: (params, dofs)
 
         jacobian_output = {}
         index_now = 0
         for load_name, load in self.assembly._loads.items():
             param_len = load._parameters.numel()
-            jacobian_output[load_name] = torch.from_numpy(jacobian[:, index_now:index_now+param_len]).to(GC_now.dtype).to(GC_now.device)
+            jacobian_output[load_name] = torch.from_numpy(jacobian[:, index_now:index_now+param_len]).to(result.GC.dtype).to(result.GC.device)
             index_now += param_len
 
         return jacobian_output
     
-
     def get_total_energy(self, GC_now: torch.Tensor) -> float:
         
         potential_energy = self.assembly._total_Potential_Energy(GC=GC_now)

@@ -7,39 +7,48 @@ FEA是一个基于PyTorch的有限元分析框架，支持非线性材料、接�
 ## 整体架构（与当前仓库同步）
 
 ```
-FEA/
-├── launch_fea_ui.py            # UI 启动器（可选）
-├── readme.md                   # 项目简介（待补充）
-├── setup.py                    # 安装脚本
-├── Docs/                       # 文档
-│   └── structure.md            # 架构说明（本文档）
-├── FEA/                        # 核心模块
-│   ├── __init__.py             # 模块入口与导出
-│   ├── controller.py           # FEAController 主控制器
-│   ├── inp.py                  # INP 文件解析器
-│   ├── assemble/               # 装配模块（核心组织层）
-│   │   ├── assembly.py         # Assembly 装配与全局矩阵装配
-│   │   ├── part.py             # Part/Instance 及表面集合
-│   │   ├── reference_points.py # 参考点
-│   │   ├── elements/           # 单元模块
-│   │   │   ├── base.py         # 单元基类
-│   │   │   ├── C3/             # 3D 单元族（C3D4/8/10/20 等）
-│   │   │   └── materials/      # 材料模型（线弹性/超弹性等）
-│   │   ├── loads/              # 载荷模块（集中力/压力/体力/接触等）
-│   │   └── constraints/        # 约束模块（边界/耦合/接触等）
-│   └── solver/                 # 求解器模块
-│       ├── basesolver.py       # 求解器基类 BaseSolver
-│       ├── static_implicit.py  # 静力隐式（牛顿-拉夫森）
-│       ├── dynamic_implicit.py # 动力隐式（Newmark-β）
-│       ├── dynamic_explicit.py # 动力显式（中心差分）
-│       └── _linear_solver.py   # 线性方程组求解（Pardiso/CG）
-└── tests/                      # 测试用例
-  ├── element_test/           # 单元与表面相关测试
-  ├── kinetic_test/           # 动力学（显/隐式）测试
-  ├── contact_test/           # 接触基准测试
-  ├── pressure_test/          # 压力载荷测试
-  ├── gradient_test/          # 梯度/灵敏度与优化验证
-  └── shape_optimization/     # 形状优化示例
+torchfea/
+├── pyproject.toml              # 项目配置
+├── readme.md                   # 项目简介
+├── docs/                       # 文档
+│   ├── structure.md            # 架构说明（本文档）
+│   ├── usage.md                # 使用说明
+│   └── elements/               # 单元文档
+├── examples/                   # 示例与测试用例
+│   ├── vis.py                  # 可视化示例
+│   ├── contact_test/           # 接触分析示例
+│   ├── element_test/           # 单元测试
+│   ├── gradient_test/          # 梯度优化测试
+│   ├── instance_test/          # 实例测试
+│   ├── jacobian_test/          # 雅可比矩阵测试
+│   ├── kinetic_test/           # 动力学测试
+│   ├── pressure_test/          # 压力载荷测试
+│   └── shape_optimization/     # 形状优化示例
+└── src/
+    └── torchfea/               # 核心包
+        ├── __init__.py         # 模块入口
+        ├── controller.py       # FEAController 主控制器
+        ├── inp.py              # INP 文件解析器
+        ├── assemble/           # 装配模块（核心组织层）
+        │   ├── assembly.py     # Assembly 装配与全局矩阵装配
+        │   ├── part.py         # Part/Instance 部件与实例
+        │   ├── reference_points.py # 参考点
+        │   ├── boundarys/      # 边界条件模块
+        │   ├── constraints/    # 约束模块
+        │   ├── elements/       # 单元模块
+        │   │   ├── dimension3/ # 3D 单元实现
+        │   │   └── materials/  # 材料模型
+        │   └── loads/          # 载荷模块
+        ├── optimizer/          # 优化器模块
+        └── solver/             # 求解器模块
+            ├── basesolver.py   # 求解器基类
+            ├── _linear_solver.py # 线性方程组求解
+            ├── static/         # 静力学求解器
+            │   ├── solver.py   # 静力隐式求解器
+            │   └── result.py   # 结果处理
+            └── dynamic/        # 动力学求解器
+                ├── implicit.py # 动力隐式
+                └── explicit.py # 动力显式
 ```
 
 ## 核心组件架构
@@ -48,7 +57,7 @@ FEA/
 
 #### FEAController
 
-- **文件位置**: `FEA/controller.py`
+- **文件位置**: `src/torchfea/controller.py`
 - **功能**: 主控制器，协调装配(Assembly)和求解器(Solver)
 - **主要方法**:
   - `initialize()`: 初始化模型
@@ -63,7 +72,7 @@ FEA/
 
 #### Assembly (装配)
 
-- **文件位置**: `FEA/assemble/assembly.py`
+- **文件位置**: `src/torchfea/assemble/assembly.py`
 - **功能**: 统一管理整个有限元模型的所有组件
 - **核心属性**:
   - `_parts`: 部件字典
@@ -72,6 +81,7 @@ FEA/
   - `_reference_points`: 参考点
   - `_loads`: 载荷集合
   - `_constraints`: 约束集合
+  - `boundary_conditions`: 边界条件集合
   - `RGC`: 冗余广义坐标
   - `GC`: 广义坐标
 
@@ -79,52 +89,54 @@ FEA/
 
 ##### 几何组件
 
-- **Part (部件)**: 定义几何部件，包含节点、单元、材料等信息
-- **Instance (实例)**: 部件的实例化，可进行变换和定位
-- **ReferencePoint (参考点)**: 定义参考点，用于约束和载荷的施加
+- **Part (部件)**: `src/torchfea/assemble/part.py`，定义几何部件
+- **Instance (实例)**: 部件的实例化
+- **ReferencePoint (参考点)**: `src/torchfea/assemble/reference_points.py`
 
-##### 单元模块 (`elements/`)
+##### 单元模块 (`src/torchfea/assemble/elements/`)
 
-- **BaseElement**: 单元基类
-- **C3D系列**: 3D单元 (C3D4, C3D8, C3D10, C3D20等)
-- **材料模块**: 线弹性、超弹性等材料模型
-- **表面单元**: T3, T6, Q4, Q8等表面单元
+- **BaseElement**: `src/torchfea/assemble/elements/base.py`
+- **3D单元**: `src/torchfea/assemble/elements/dimension3/` (包含 brick.py, tetrahedral.py 等)
+  - `surfaces/`: 表面单元定义
+- **材料模块**: `src/torchfea/assemble/elements/materials/`
 
-##### 载荷模块 (`loads/`)
+##### 载荷模块 (`src/torchfea/assemble/loads/`)
 
-- **BaseLoad**: 载荷基类
-- **Concentrate_Force**: 集中力载荷
-- **Pressure**: 表面压力载荷
-- **Contact**: 接触载荷
-- **BodyForce**: 体力载荷
+- **BaseLoad**: `src/torchfea/assemble/loads/base.py`
+- **各类载荷**: `contact.py`, `pressure.py`, `concentrate_force.py` 等
 
-##### 约束模块 (`constraints/`)
+##### 约束与边界 (`src/torchfea/assemble/boundarys/` & `constraints/`)
 
-- **BaseConstraint**: 约束基类
-- **Boundary_Condition**: 位移边界条件
-- **Couple**: 耦合约束
+- **Boundarys**: `src/torchfea/assemble/boundarys/`
+  - `boundary_condition.py`: 位移边界条件
+  - `boundary_condition_rp.py`: 参考点边界条件
+- **Constraints**: `src/torchfea/assemble/constraints/`
+  - `couple.py`: 耦合约束
 
 ### 3. 求解器层 (Solver Layer)
 
 ```
-solver/
-├── __init__.py
+src/torchfea/solver/
 ├── basesolver.py         # BaseSolver 基类
-├── static_implicit.py    # 静力隐式（能量最小化 + 线搜索）
-├── dynamic_implicit.py   # 动力隐式（Newmark-β，增量能量极小化）
-└── dynamic_explicit.py   # 动力显式（中心差分，质量集总）
+├── _linear_solver.py     # 线性求解工具
+├── static/
+│   ├── solver.py         # StaticImplicitSolver 静力隐式
+│   └── result.py         # StaticResult 结果类
+└── dynamic/
+    ├── implicit.py       # DynamicImplicitSolver 动力隐式
+    └── explicit.py       # DynamicExplicitSolver 动力显式
 ```
 
 #### 求解器类型与要点
 
-- StaticImplicitSolver（静力隐式）
+- **StaticImplicitSolver** (`static/solver.py`)
   - 牛顿-拉夫森迭代，支持线搜索与预条件线性求解（Pardiso/CG）。
   - 核心接口：`get_stiffness_matrix(GC_now) -> (R, K_idx, K_val)`，`solve()`。
-- DynamicImplicitSolver（动力隐式，新马克法）
+- **DynamicImplicitSolver** (`dynamic/implicit.py`)
   - Newmark-β（默认 γ=0.5, β=0.25），以增量能量为目标进行非线性迭代。
   - 使用 `assemble_mass_matrix(GC_now)` 获取质量矩阵，`get_incremental_stiffness_matrix()` 组装切线矩阵。
   - 提供 `get_next_velocity()` 基于 Newmark 更新 `GV/GA`。
-- DynamicExplicitSolver（动力显式，中心差分）
+- **DynamicExplicitSolver** (`dynamic/explicit.py`)
   - 中心差分时间推进，建议质量集总（lumped mass），临界步长受网格与材料波速限制。
   - 关键步骤：半步速度、位移更新、残余力 R 计算与加速度更新（M⁻¹R）。
   - 支持按时间间隔存储：`time_per_storage`；需合理估计 `Δt` 以保持稳定性。
@@ -241,27 +253,27 @@ FEAController.solve() → Solver.solve()
 ### 基本使用流程
 
 ```python
-import FEA
+import torchfea
 
 # 从INP文件加载模型
-inp = FEA.FEA_INP()
+inp = torchfea.FEA_INP()
 inp.read_inp('model.inp')
-controller = FEA.from_inp(inp)
+controller = torchfea.from_inp(inp)
 
 # 设置求解器（示例 1：静力隐式）
-controller.solver = FEA.solver.StaticImplicitSolver()
+controller.solver = torchfea.solver.StaticImplicitSolver()
 
 # 初始化和求解
 controller.initialize()
 result = controller.solve()
 
 # 示例 2：动力隐式（Newmark-β）
-controller.solver = FEA.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=1.0)
+controller.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=1.0)
 controller.initialize()
 controller.solve()
 
 # 示例 3：动力显式（中心差分）
-controller.solver = FEA.solver.DynamicExplicitSolver(time_end=1.0, time_per_storage=1e-4)
+controller.solver = torchfea.solver.DynamicExplicitSolver(time_end=1.0, time_per_storage=1e-4)
 controller.initialize()
 controller.solve()
 ```
@@ -282,7 +294,7 @@ controller.solve()
 
 - 支持自接触和多体接触
 - 接触力的自动计算
- - 测试样例见 `tests/contact_test/`、`tests/pressure_test/` 与 `tests/gradient_test/`。
+ - 测试样例见 `examples/contact_test/`、`examples/pressure_test/` 与 `examples/gradient_test/`。
 
 ### 4. 表面处理
 
@@ -328,11 +340,11 @@ controller.solve()
 
 ## 测试与示例
 
-- `tests/element_test/`：单元与表面几何、法向、编号一致性等测试
-- `tests/kinetic_test/`：显式/隐式动力学时间积分与能量检查
-- `tests/contact_test/`：接触算例与基准对比
-- `tests/pressure_test/`：表面压力加载验证
-- `tests/gradient_test/` 与 `tests/shape_optimization/`：梯度与优化流程
+- `examples/element_test/`：单元与表面几何、法向、编号一致性等测试
+- `examples/kinetic_test/`：显式/隐式动力学时间积分与能量检查
+- `examples/contact_test/`：接触算例与基准对比
+- `examples/pressure_test/`：表面压力加载验证
+- `examples/gradient_test/` 与 `examples/shape_optimization/`：梯度与优化流程
 
 ---
 

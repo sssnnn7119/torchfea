@@ -2,10 +2,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .. import Assembly
+    from ... import Assembly
 import time
 import torch
-from .basesolver import BaseSolver
+from ..basesolver import BaseSolver
 
 class DynamicExplicitSolver(BaseSolver):
 

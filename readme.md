@@ -31,9 +31,9 @@ python .\Docs\examples\run_static_pressure.py
 
 ## 目录导航
 
-- `FEA/`：核心代码（装配、元素、载荷、约束、求解器等）
-- `tests/`：各类算例与验证（元素、压力、接触、动力学、梯度/优化）
-- `Docs/`：架构与使用文档，`Docs/examples/` 提供可直接运行的示例脚本
+- `src/`torchfea：核心代码（装配、元素、载荷、约束、求解器等）
+- `examples/`：各类算例与验证（元素、压力、接触、动力学、梯度/优化）
+- `docs/`：架构与使用文档，`Docs/examples/` 提供可直接运行的示例脚本
 
 ## 许可
 

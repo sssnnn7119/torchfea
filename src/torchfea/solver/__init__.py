@@ -1,5 +1,5 @@
 
 from .basesolver import BaseSolver
-from .static_implicit import StaticImplicitSolver
-from .dynamic_implicit import DynamicImplicitSolver
-from .dynamic_explicit import DynamicExplicitSolver
+from .static.solver import StaticImplicitSolver
+from .dynamic.implicit import DynamicImplicitSolver
+from .dynamic.explicit import DynamicExplicitSolver
