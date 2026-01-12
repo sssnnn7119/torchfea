@@ -60,7 +60,8 @@ class StaticImplicitSolver(BaseSolver):
         # start the iteration
         if GC0 is None:
             GC0 = self.assembly.GC
-        result = self._solve_iteration(GC=GC0, tol_error=self.tol_error)
+        with torch.no_grad():
+            result = self._solve_iteration(GC=GC0, tol_error=self.tol_error)
 
         if type(result) == bool:
             return result

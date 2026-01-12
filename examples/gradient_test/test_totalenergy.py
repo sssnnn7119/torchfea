@@ -79,10 +79,8 @@ K_solver.factorize(K_sp)
 part = fe.assembly.get_part('final_model')
 
 def closure_adj(GC_now: torch.Tensor):
-    R = fe.assembly._assemble_generalized_Matrix(RGC=fe.assembly._GC2RGC(GC_now))[0]
-    R_now = R[:fe.assembly.RGC_list_indexStart[1]].reshape([-1, 3])
-    R_bc = R_now[bc_dof2]
-    return R_bc.sum(0)[1]
+    R = fe.assembly._total_Potential_Energy(GC=GC_now)
+    return R
 
 ADJF = -torch.autograd.functional.jacobian(closure_adj, GC0).cpu().numpy()
 ADJu = K_solver.solve(K_sp, ADJF)
@@ -112,10 +110,8 @@ def compute_objective(GC: torch.Tensor,
                         assembly: torchfea.Assembly,
                         ) -> torch.Tensor:
     # compute the sensitivity of the displacement
-    R = assembly._assemble_generalized_Matrix(RGC=fe.assembly._GC2RGC(GC))[0]
-    R_now = R[:fe.assembly.RGC_list_indexStart[1]].reshape([-1, 3])
-    R_bc = R_now[bc_dof2]
-    return R_bc.sum(0)[1]
+    R = assembly._total_Potential_Energy(GC=GC)
+    return R
     
 grad_sensi = torchfea.solver.get_sensitivity(
     fe_result=fearesult,
@@ -128,4 +124,29 @@ grad_sensi = torchfea.solver.get_sensitivity(
 print('Gradient check for node position:')
 print('Autograd gradient:')
 
-raise False
+nodes0 = part.nodes.clone().detach()
+R0 = fe.assembly.assemble_Stiffness_Matrix(RGC=fe.assembly._GC2RGC(GC0))[0]
+index_test = torch.where(grad_pos.abs() > 0.000001)
+E0 = fe.assembly._total_Potential_Energy(GC=GC0).item()
+epsilon = 1e-3
+for i in range(index_test[0].shape[0]):
+    indtest1 = index_test[0][i].item()
+    indtest2 = index_test[1][i].item()
+    # if (nodes0[indtest1, 2] != 70):
+    #     continue
+    part.nodes = nodes0.detach().clone()
+    part.nodes[indtest1, indtest2] += epsilon
+    fe.solve(tol_error=1e-6, GC0=GC0)
+    GC1 = fe.assembly.GC.clone().detach()
+    R1 = fe.assembly.assemble_Stiffness_Matrix(RGC=fe.assembly._GC2RGC(GC0))[0]
+    E1 = fe.assembly._total_Potential_Energy(GC=GC1).item()
+
+    diff = (E1 - E0) / epsilon
+
+    print('ind:', (indtest1, indtest2))
+    print('nodes:', nodes0[indtest1].cpu().numpy())
+    
+    print('diff_U:', diff)
+    print('grad_pos:', grad_sensi.reshape([-1, 3])[indtest1, indtest2].item())
+    print('error:', abs(diff - grad_sensi.reshape([-1, 3])[indtest1, indtest2].item()) / abs(diff))
+    print('\n\n')

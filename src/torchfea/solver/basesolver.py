@@ -4,8 +4,9 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .. import Assembly
-
+    from .baseresult import BaseResult
 import torch
+
 
 class BaseSolver:
     """
@@ -35,7 +36,7 @@ class BaseSolver:
         """
         self.assembly = assembly
 
-    def solve(self, GC0: torch.Tensor = None, *args, **kwargs) -> bool:
+    def solve(self, GC0: torch.Tensor = None, *args, **kwargs) -> BaseResult:
         """
         Solves the finite element analysis problem.
 
@@ -44,7 +45,7 @@ class BaseSolver:
             tol_error (float, optional): Tolerance error for convergence. Defaults to 1e-7.
 
         Returns:
-            bool: True if the solution converged, False otherwise.
+            BaseResult: The result of the finite element analysis.
         """
         pass
 

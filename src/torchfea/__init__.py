@@ -6,7 +6,6 @@ from .model import Part, Instance, ReferencePoint, Assembly
 from .model import materials, elements, loads, constraints, surfaces, boundarys
 from . import solver
 
-
 def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
     """
     Load a FEA model from an INP file.

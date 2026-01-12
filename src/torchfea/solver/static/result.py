@@ -35,6 +35,16 @@ class StaticResult(BaseResult):
         The Pardiso solver for the stiffness matrix
         """
 
+        self.K_sp: sp.csr_matrix = None
+        """
+        The stiffness matrix in sparse CSR format
+        """
+
+        self.if_factorized: bool = False
+        """
+        Flag indicating whether the stiffness matrix has been factorized
+        """
+
     def factorize_stiffness_matrix(self, assembly: 'Assembly'):
         """
         Factorize the stiffness matrix using the Pardiso solver.
@@ -45,10 +55,11 @@ class StaticResult(BaseResult):
         """
         assembly.set_load_parameters(self.load_params)
         K_indices, K_values = assembly.assemble_Stiffness_Matrix(GC=self.GC)[1:]
-        K_sp = sp.coo_matrix((K_values.cpu().numpy(), (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())))
-        K_csr = K_sp.tocsr()
+        K_sp = sp.coo_matrix((K_values.detach().cpu().numpy(), (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())))
+        self.K_sp = K_sp.tocsr()
         self.K_solver = pypardiso.PyPardisoSolver()
-        self.K_solver.factorize(K_csr)
+        self.K_solver.factorize(self.K_sp)
+        self.if_factorized = True
 
     def save(self, path: str):
         """
@@ -63,7 +74,7 @@ class StaticResult(BaseResult):
             for key, value in self.load_params.items():
                 load_params[key] = value.cpu().numpy()
 
-        np.savez_compressed(file=path, GC=self.GC.numpy(), load_params=load_params)
+        np.savez_compressed(file=path, GC=self.GC.cpu().numpy(), load_params=load_params)
     
     @classmethod
     def load(cls, path: str) -> "StaticResult":
@@ -80,5 +91,5 @@ class StaticResult(BaseResult):
         load_params = {}
         if load_params_np is not None:
             for key, value in load_params_np.items():
-                load_params[key] = torch.tensor(value)
+                load_params[key] = torch.tensor(value.tolist())
         return cls(GC=GC, load_params=load_params)

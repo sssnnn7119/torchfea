@@ -35,7 +35,7 @@ class FEAController():
         self.assembly.initialize(*args, **kwargs)
         self.solver.initialize(assembly=self.assembly, *args, **kwargs)
 
-    def solve(self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs) -> bool:
+    def solve(self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs):
         """
         Solves the finite element analysis problem.
 
