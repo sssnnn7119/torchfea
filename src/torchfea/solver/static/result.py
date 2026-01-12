@@ -1,6 +1,17 @@
+from __future__ import annotations
+
+from typing import Optional, TYPE_CHECKING
+
+import pypardiso
+
+if TYPE_CHECKING:
+    from ... import Assembly
+
 import numpy as np
 import torch
+
 from ..baseresult import BaseResult
+import scipy.sparse as sp
 
 class StaticResult(BaseResult):
     """
@@ -18,6 +29,26 @@ class StaticResult(BaseResult):
         """
         Load parameters used in the simulation
         """
+
+        self.K_solver: pypardiso.PyPardisoSolver = None
+        """
+        The Pardiso solver for the stiffness matrix
+        """
+
+    def factorize_stiffness_matrix(self, assembly: 'Assembly'):
+        """
+        Factorize the stiffness matrix using the Pardiso solver.
+
+        Args:
+            K_idx (torch.Tensor): The indices of the stiffness matrix.
+            K_val (torch.Tensor): The values of the stiffness matrix.
+        """
+        assembly.set_load_parameters(self.load_params)
+        K_indices, K_values = assembly.assemble_Stiffness_Matrix(GC=self.GC)[1:]
+        K_sp = sp.coo_matrix((K_values.cpu().numpy(), (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())))
+        K_csr = K_sp.tocsr()
+        self.K_solver = pypardiso.PyPardisoSolver()
+        self.K_solver.factorize(K_csr)
 
     def save(self, path: str):
         """

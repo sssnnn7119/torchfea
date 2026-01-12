@@ -2,8 +2,8 @@ import numpy as np
 import torch
 from .inp import FEA_INP
 from .controller import FEAController
-from .assemble import Part, Instance, ReferencePoint, Assembly
-from .assemble import materials, elements, loads, constraints, surfaces, boundarys
+from .model import Part, Instance, ReferencePoint, Assembly
+from .model import materials, elements, loads, constraints, surfaces, boundarys
 from . import solver
 
 

@@ -115,6 +115,9 @@ class Assembly:
     def show_all(self, GC: torch.Tensor = None):
         """
         Visualize all instances in the assembly.
+        
+        before calling this function, make sure all instances have been assigned external_surface attribute.
+        assembly.get_instance('instance_name').external_surface = 'surface_set_name'
 
         Args:
             GC (torch.Tensor, optional): The generalized coordinates to use for visualization. Defaults to None.
@@ -347,8 +350,10 @@ class Assembly:
             GC (torch.Tensor, optional): The generalized coordinates. If provided, it will be converted to RGC internally. Defaults to None.
 
         Returns:
-            tuple: A tuple containing the right-hand side vector, the indices of the stiffness matrix, and the values of the stiffness matrix.
-                -
+            tuple: A tuple containing:
+                R (torch.Tensor): The global force vector.
+                K_indices (torch.Tensor): The indices of the global stiffness matrix.
+                K_values (torch.Tensor): The values of the global stiffness matrix.
         """
 
         if RGC is None:

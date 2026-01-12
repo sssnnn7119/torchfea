@@ -29,7 +29,7 @@ torchfea/
         ├── __init__.py         # 模块入口
         ├── controller.py       # FEAController 主控制器
         ├── inp.py              # INP 文件解析器
-        ├── assemble/           # 装配模块（核心组织层）
+        ├── model/           # 装配模块（核心组织层）
         │   ├── assembly.py     # Assembly 装配与全局矩阵装配
         │   ├── part.py         # Part/Instance 部件与实例
         │   ├── reference_points.py # 参考点
@@ -66,7 +66,7 @@ torchfea/
   - `assembly`: 装配对象
   - `solver`: 求解器对象
 
-### 2. 装配层 (Assembly Layer)
+### 2. 装配层 (Model Layer)
 
 装配层是FEA框架的核心组织层，统一管理所有有限元模型组件，包括几何、材料、载荷、约束等。
 
@@ -294,7 +294,7 @@ controller.solve()
 
 - 支持自接触和多体接触
 - 接触力的自动计算
- - 测试样例见 `examples/contact_test/`、`examples/pressure_test/` 与 `examples/gradient_test/`。
+- 测试样例见 `examples/contact_test/`、`examples/pressure_test/` 与 `examples/gradient_test/`。
 
 ### 4. 表面处理
 

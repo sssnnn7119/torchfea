@@ -2,7 +2,7 @@
 from unittest.mock import Base
 import numpy as np
 import torch
-from .assemble import Assembly
+from .model import Assembly
 from .solver import BaseSolver
 
 
