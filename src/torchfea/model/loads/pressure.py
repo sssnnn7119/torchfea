@@ -70,7 +70,7 @@ class Pressure(BaseLoad):
             if surf_elem._elems.shape[0] == 0:
                 continue
 
-            Vdot_indices = torch.stack([surf_elem._elems*3, surf_elem._elems*3+1, surf_elem._elems*3+2], dim=1).to(torch.int64).to(self._assembly.device)
+            Vdot_indices = torch.stack([surf_elem._elems*3, surf_elem._elems*3+1, surf_elem._elems*3+2], dim=1).to(torch.int64)
             
             
             Vdot_2_indices = torch.stack([
@@ -78,7 +78,7 @@ class Pressure(BaseLoad):
                     torch.arange(3, device=surf_elem._elems.device).reshape([1, 3, 1, 1, 1]).repeat([surf_elem._elems.shape[0], 1, surf_elem._elems.shape[1], 3, surf_elem._elems.shape[1]]).flatten(),
                     surf_elem._elems.reshape([surf_elem._elems.shape[0], 1, 1, 1, surf_elem._elems.shape[1]]).repeat([1, 3, surf_elem._elems.shape[1], 3, 1]).flatten(),
                     torch.arange(3, device=surf_elem._elems.device).reshape([1, 1, 1, 3, 1]).repeat([surf_elem._elems.shape[0], 3, surf_elem._elems.shape[1], 1, surf_elem._elems.shape[1]]).flatten()
-                ], dim=0).to(torch.int64).to(self._assembly.device)
+                ], dim=0).to(torch.int64)
             
             Vdot_2_indices = torch.stack([
                 Vdot_2_indices[0] * 3 + Vdot_2_indices[1],
@@ -111,8 +111,7 @@ class Pressure(BaseLoad):
             
             # V = [r, rdg, rdr] the mixed product of the deformed position and its derivatives
             # r_added_gaussian = [g, e, i, m] the deformed
-            r_added_gaussian = torch.zeros([surf_elem._num_gaussian, surf_elem._elems.shape[0], 3, 3],
-                device=self._assembly.device)
+            r_added_gaussian = torch.zeros([surf_elem._num_gaussian, surf_elem._elems.shape[0], 3, 3])
             
             for a in range(surf_elem.num_nodes_per_elem):
                 r_added_gaussian += torch.einsum('gm, ei->geim', shape_fun_added[:, :, a],
@@ -149,7 +148,7 @@ class Pressure(BaseLoad):
 
         node_pos = self._assembly.get_instance(self.instance_name).nodes + RGC[self._load_index]
 
-        V = torch.scalar_tensor(0, device=self._assembly.device)
+        V = torch.scalar_tensor(0)
         for surf_ind in range(len(self.surface_element)):
             surf_elem = self.surface_element[surf_ind]
             if surf_elem._elems.shape[0] == 0:
@@ -160,7 +159,7 @@ class Pressure(BaseLoad):
             
             # V = [r, rdg, rdr] the mixed product of the deformed position and its derivatives
             # r_added_gaussian = [g, e, i, m] the deformed
-            r_added_gaussian = torch.zeros([surf_elem._num_gaussian, surf_elem._elems.shape[0], 3, 3], device=self._assembly.device)
+            r_added_gaussian = torch.zeros([surf_elem._num_gaussian, surf_elem._elems.shape[0], 3, 3])
             
             for a in range(surf_elem.num_nodes_per_elem):
                 r_added_gaussian += torch.einsum('gm, ei->geim', shape_fun_added[:, :, a],

@@ -174,7 +174,7 @@ class C3D8(Element_3D):
         Returns:
             torch.Tensor: Surface element node indices
         """
-        index_now = np.where(np.isin(self._elems_index, elems_ind))[0]
+        index_now = np.where(np.isin(self._elems_index.cpu().numpy(), elems_ind))[0]
 
         if index_now.shape[0] == 0:
             quad_elems = torch.empty([0, 4],
@@ -716,7 +716,7 @@ class C3D20(Element_3D):
         Returns:
             Tensor with surface node indices
         """
-        index_now = np.where(np.isin(self._elems_index, elems_ind))[0]
+        index_now = np.where(np.isin(self._elems_index.cpu().numpy(), elems_ind))[0]
         
         if index_now.shape[0] == 0:
             quad_elems = torch.empty([0, 8], dtype=torch.long, device=self._elems.device)

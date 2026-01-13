@@ -45,7 +45,7 @@ class C3D4(Element_3D):
     def extract_surface(self, surface_ind: int,
                            elems_ind: torch.Tensor):
 
-        index_now = np.where(np.isin(self._elems_index, elems_ind))[0]
+        index_now = np.where(np.isin(self._elems_index.cpu().numpy(), elems_ind))[0]
 
         if index_now.shape[0] == 0:
             tri_elems = torch.empty([0, 3], dtype=torch.long, device=self._elems.device)
@@ -120,7 +120,7 @@ class C3D10(Element_3D):
         super().initialize(*args, **kwargs)
 
     def extract_surface(self, surface_ind: int, elems_ind: torch.Tensor):
-        index_now = np.where(np.isin(self._elems_index, elems_ind))[0]
+        index_now = np.where(np.isin(self._elems_index.cpu().numpy(), elems_ind))[0]
         
         if index_now.shape[0] == 0:
             return []
@@ -163,19 +163,19 @@ class C3D10(Element_3D):
         if surface_ind == 0:
             return torch.tensor([[6, 0, 2],
                                     [5, 1, 2],
-                                    [4, 0, 1]], dtype=torch.long, device='cpu')
+                                    [4, 0, 1]], dtype=torch.long)
         elif surface_ind == 1:
             return torch.tensor([[4, 0, 1],
                     [8, 1, 3],
-                    [7, 0, 3]], dtype=torch.long, device='cpu')
+                    [7, 0, 3]], dtype=torch.long)
         elif surface_ind == 2:
             return torch.tensor([[5, 1, 2],
                     [9, 2, 3],
-                    [8, 1, 3]], dtype=torch.long, device='cpu')
+                    [8, 1, 3]], dtype=torch.long)
         elif surface_ind == 3:
             return torch.tensor([[7, 0, 3],
                     [9, 2, 3],
-                    [6, 0, 2]], dtype=torch.long, device='cpu')
+                    [6, 0, 2]], dtype=torch.long)
 
         else:
             raise ValueError(f"Invalid surface index: {surface_ind}")

@@ -137,7 +137,7 @@ def compute_objective(GC: torch.Tensor,
     # compute the sensitivity of the displacement
     return GC[-2]
     
-grad_sensi = torchfea.solver.get_sensitivity(
+grad_sensi = torchfea.solver.get_sensitivity_static(
     fe_result=feresult,
     assembly=fe.assembly,
     design_vars=part.nodes.reshape(-1),

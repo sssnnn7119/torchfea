@@ -18,14 +18,14 @@ class StaticResult(BaseResult):
     The result of a static finite element analysis (FEA) simulation.
     """
 
-    def __init__(self, GC: torch.Tensor, load_params: dict[str, torch.Tensor] = None):
+    def __init__(self, GC: torch.Tensor, load_params: dict[str, torch.Tensor]):
         super().__init__()
-        self.GC = GC
+        self.GC = GC.detach().clone()
         """ 
         Global displacements tensor
         """
 
-        self.load_params: dict[str, torch.Tensor] = load_params
+        self.load_params: dict[str, torch.Tensor] = {k: v.detach().clone() for k, v in load_params.items()}
         """
         Load parameters used in the simulation
         """

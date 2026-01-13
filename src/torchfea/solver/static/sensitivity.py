@@ -41,7 +41,7 @@ def _detach_recursive(obj, visited=None):
             else:
                 _detach_recursive(v, visited)
 
-def get_sensitivity(
+def get_sensitivity_static(
     fe_result: StaticResult,
     assembly: Assembly,
     design_vars: torch.Tensor,
@@ -64,7 +64,7 @@ def get_sensitivity(
             A callback to apply design variables to the assembly.
             - Signature: `def apply_func(assembly: Assembly, design_vars: torch.Tensor) -> None`
             - Behavior: Modify `assembly` in-place using `design_vars`. Operations must be traceable
-              by Autograd (e.g., `part.nodes = original_nodes + design_vars`).
+              by Autograd (e.g., `part.nodes = original_nodes + design_vars.reshape_as(part.nodes)`).
         compute_objective_func (Callable[[torch.Tensor, Assembly], torch.Tensor]): 
             A callback to compute the objective scalar.
             - Signature: `def compute_objective_func(GC: torch.Tensor, assembly: Assembly) -> torch.Tensor`
@@ -76,11 +76,12 @@ def get_sensitivity(
             Shape matches `design_vars`.
     """
     try:
+        # 0. Set load parameters
+        assembly.set_load_parameters(fe_result.load_params)
+
         # 1. Factorize system if needed
         if fe_result.if_factorized is False:
             fe_result.factorize_stiffness_matrix(assembly=assembly)
-
-        assembly.set_load_parameters(fe_result.load_params)
 
         # 2. Prepare Autograd graph
         design_vars_ = design_vars.clone().detach().requires_grad_(True)

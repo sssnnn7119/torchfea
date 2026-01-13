@@ -79,7 +79,7 @@ class Element_3D(BaseElement):
                 
         """
                 
-        self.surf_order: torch.Tensor = torch.LongTensor([0, 0, 0, 0, 0, 0], device='cpu').to(torch.int8)
+        self.surf_order: torch.Tensor = torch.LongTensor([0, 0, 0, 0, 0, 0]).to(torch.int8)
         """
             whether to reduce the order of the element, for the first order element, this parameter is not used,\n
             size: [surface] or [element, surface]
@@ -113,11 +113,11 @@ class Element_3D(BaseElement):
 
         index0_ = torch.stack([
                 self._elems.T.reshape([self.num_nodes_per_elem, 1, 1, 1, -1]).repeat([1, 3, self.num_nodes_per_elem, 3, 1]),
-                torch.arange(3, device='cpu').reshape([1, 3, 1, 1, 1]).repeat([self.num_nodes_per_elem, 1, self.num_nodes_per_elem, 3, self._elems.shape[0]]),
+                torch.arange(3).reshape([1, 3, 1, 1, 1]).repeat([self.num_nodes_per_elem, 1, self.num_nodes_per_elem, 3, self._elems.shape[0]]),
                 self._elems.T.reshape([1, 1, self.num_nodes_per_elem, 1, -1]).repeat([self.num_nodes_per_elem, 3, 1, 3, 1]),
-                torch.arange(3, device='cpu').reshape([1, 1, 1, 3, 1]).repeat([self.num_nodes_per_elem, 3, self.num_nodes_per_elem, 1, self._elems.shape[0]])
+                torch.arange(3).reshape([1, 1, 1, 3, 1]).repeat([self.num_nodes_per_elem, 3, self.num_nodes_per_elem, 1, self._elems.shape[0]])
             ], dim=0).reshape([4, -1])
-        index0 = torch.zeros([2, index0_.shape[1]], dtype=torch.int64, device='cpu')
+        index0 = torch.zeros([2, index0_.shape[1]], dtype=torch.int64)
         index0[0] = index0_[0] * 3 + index0_[1]
         index0[1] = index0_[2] * 3 + index0_[3]
 
@@ -130,10 +130,9 @@ class Element_3D(BaseElement):
             index2, return_inverse=True)
 
         inverse_index = torch.zeros_like(index_sorted_matrix,
-                                         device='cpu',
                                          dtype=torch.int64)
         inverse_index[index_sorted_matrix] = torch.arange(
-            0, index_sorted_matrix.max() + 1, device='cpu', dtype=torch.int64)
+            0, index_sorted_matrix.max() + 1, dtype=torch.int64)
 
         default_device = torch.zeros([1]).device
 
@@ -338,7 +337,7 @@ class Element_3D(BaseElement):
         shapeFun0 = torch.einsum('ab, gb->ga', self.shape_function[0].cpu(),
                                       pp)
         gaussian_position = torch.zeros(
-            [self._num_gaussian, self._elems.shape[0], 3], device='cpu')
+            [self._num_gaussian, self._elems.shape[0], 3])
         for i in range(self._elems.shape[1]):
             gaussian_position = gaussian_position + torch.einsum(
                 'g,eI->geI', shapeFun0[:, i], nodes[self._elems[:,
@@ -500,9 +499,9 @@ class Element_3D(BaseElement):
         """
         Modify the RGC_remain_index
         """
-        RGC_remain_index[self._elems.unique()] = True
+        RGC_remain_index[self._elems.unique().cpu().numpy()] = True
         
-        mid_nodes_index = self.get_2nd_order_point_index(order_required=1)
+        mid_nodes_index = self.get_2nd_order_point_index(order_required=1).cpu().numpy()
         if mid_nodes_index.shape[0] > 0:
             # set the mid nodes to be not required DoFs
             RGC_remain_index[mid_nodes_index[:, 0]] = False
@@ -557,7 +556,7 @@ class Element_3D(BaseElement):
 
         if len(mid_nodes_index) == 0:
             # if there is no mid node, return an empty tensor
-            return torch.zeros([0, 3], dtype=torch.int64, device='cpu')
+            return torch.zeros([0, 3], dtype=torch.int64)
         
         mid_nodes_index = torch.cat(mid_nodes_index, dim=0)
         mid_nodes_index = mid_nodes_index.unique(dim=0)
@@ -581,7 +580,7 @@ class Element_3D(BaseElement):
                     [1]: the index of the neighbor node of the middle node of the element\n
                     [2]: the index of the other neighbor node of the middle node of the element\n
         """
-        return torch.zeros([0, 3], dtype=torch.int64, device='cpu')
+        return torch.zeros([0, 3], dtype=torch.int64)
     
     def _get_all_possible_surface_order(self) -> torch.Tensor:
         """
@@ -594,10 +593,10 @@ class Element_3D(BaseElement):
         # For a second order element, the possible surface orders are 1 and 2
         # 1 means the surface is reduced to a mid node, 2 means the surface
 
-        result = torch.ones([3**self.num_surfaces, self.num_surfaces], dtype=torch.int8, device='cpu')
+        result = torch.ones([3**self.num_surfaces, self.num_surfaces], dtype=torch.int8)
         for i in range(self.num_surfaces):
             # set the i-th column to 1 or 2 based on the binary representation of the row index
-            result[:, i] = (torch.arange(0, 3**self.num_surfaces, device='cpu') // (3**i)) % 3
+            result[:, i] = (torch.arange(0, 3**self.num_surfaces) // (3**i)) % 3
 
         return result
 

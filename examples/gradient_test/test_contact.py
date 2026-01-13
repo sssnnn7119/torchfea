@@ -117,7 +117,7 @@ def compute_objective(GC: torch.Tensor,
     R_bc = R_now[bc_dof2]
     return R_bc.sum(0)[1]
     
-grad_sensi = torchfea.solver.get_sensitivity(
+grad_sensi = torchfea.solver.get_sensitivity_static(
     fe_result=fearesult,
     assembly=fe.assembly,
     design_vars=part.nodes.reshape(-1),

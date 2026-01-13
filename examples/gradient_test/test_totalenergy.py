@@ -93,10 +93,14 @@ def closure_work(nodes_diff: torch.Tensor):
     # compute the sensitivity of the displacement
     work = torch.tensor(0.0).to(part.nodes.device)
     R = fe.assembly.assemble_Stiffness_Matrix(GC=GC0)[0]
-    work += (closure_adj(GC0) + R*ADJu).sum()
+    work += closure_adj(GC0) + (R*ADJu).sum()
     return work
 
-grad_pos = torch.autograd.functional.jacobian(closure_work, part.nodes)
+# grad_pos = torch.autograd.functional.jacobian(closure_work, part.nodes)
+nodes = part.nodes.clone().detach().requires_grad_(True)
+work = closure_work(nodes)
+work.backward()
+grad_pos = nodes.grad
 
 # show_quiver3d(nodes0[index_remain].T, grad_pos[index_remain].T)
 
@@ -113,7 +117,7 @@ def compute_objective(GC: torch.Tensor,
     R = assembly._total_Potential_Energy(GC=GC)
     return R
     
-grad_sensi = torchfea.solver.get_sensitivity(
+grad_sensi = torchfea.solver.get_sensitivity_static(
     fe_result=fearesult,
     assembly=fe.assembly,
     design_vars=part.nodes.reshape(-1),

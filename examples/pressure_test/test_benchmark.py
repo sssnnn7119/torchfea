@@ -44,6 +44,8 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 
+torch.set_default_device('cpu')
+fe.change_device(torch.device('cpu'))
 
 fe.solve(tol_error=0.01)
 
