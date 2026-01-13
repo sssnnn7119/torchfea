@@ -61,8 +61,8 @@ def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:
 
                 elems_now = elements.initialize_element(
                             element_type=element_name,
-                            elems_index=torch.from_numpy(elems[key][:, 0]),
-                            elems=torch.from_numpy(elems[key][:, 1:]),
+                            elems_index=torch.from_numpy(elems[key][:, 0]).to(torch.get_default_device()),
+                            elems=torch.from_numpy(elems[key][:, 1:]).to(torch.get_default_device()),
                             part=part_now
                             )
                 

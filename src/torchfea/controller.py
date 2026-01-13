@@ -1,6 +1,4 @@
 
-from unittest.mock import Base
-import numpy as np
 import torch
 from .model import Assembly
 from .solver import BaseSolver
@@ -96,4 +94,3 @@ class FEAController():
                     setattr(obj, k, v.to(device))
                 else:
                     self._change_device_recursive(v, device, visited)
-                    

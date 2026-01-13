@@ -79,7 +79,7 @@ class Element_3D(BaseElement):
                 
         """
                 
-        self.surf_order: torch.Tensor = torch.LongTensor([0, 0, 0, 0, 0, 0]).to(torch.int8)
+        self.surf_order: torch.Tensor = torch.tensor([0, 0, 0, 0, 0, 0]).to(torch.int8)
         """
             whether to reduce the order of the element, for the first order element, this parameter is not used,\n
             size: [surface] or [element, surface]
@@ -161,7 +161,7 @@ class Element_3D(BaseElement):
         """
 
         # get the coordinates of the guassian points
-        self.gaussian_coordinates = gauss_coordinates.cpu()
+        self.gaussian_coordinates = gauss_coordinates
         pp = self._get_interpolation_coordinates(gauss_coordinates)
 
         # get the possible surface order
@@ -334,14 +334,14 @@ class Element_3D(BaseElement):
 
     def get_gaussian_points(self, nodes: torch.Tensor):
         pp = self._get_interpolation_coordinates(self.gaussian_coordinates)
-        shapeFun0 = torch.einsum('ab, gb->ga', self.shape_function[0].cpu(),
+        shapeFun0 = torch.einsum('ab, gb->ga', self.shape_function[0],
                                       pp)
         gaussian_position = torch.zeros(
             [self._num_gaussian, self._elems.shape[0], 3])
         for i in range(self._elems.shape[1]):
             gaussian_position = gaussian_position + torch.einsum(
                 'g,eI->geI', shapeFun0[:, i], nodes[self._elems[:,
-                                                                         i]].cpu())
+                                                                         i]])
         return gaussian_position.to(nodes.device)
     
     def get_mass_matrix(self,rotation_matrix:torch.Tensor=None):
@@ -506,7 +506,7 @@ class Element_3D(BaseElement):
             # set the mid nodes to be not required DoFs
             RGC_remain_index[mid_nodes_index[:, 0]] = False
 
-        mid_nodes_index = self.get_2nd_order_point_index(order_required=2)
+        mid_nodes_index = self.get_2nd_order_point_index(order_required=2).cpu().numpy()
         if mid_nodes_index.shape[0] > 0:
             # set the mid nodes to be not required DoFs
             RGC_remain_index[mid_nodes_index[:, 0]] = True
@@ -616,7 +616,7 @@ class Element_3D(BaseElement):
             if surf_order[i] == 1:
                 # reduce the order of the shape function
                 mid_nodes_index_list.append(
-                    self.get_2nd_order_point_index_surface(i).cpu())
+                    self.get_2nd_order_point_index_surface(i))
         if len(mid_nodes_index_list) == 0:
             # if there is no mid node, return an empty tensor
             return shape_function.clone()
@@ -633,7 +633,7 @@ class Element_3D(BaseElement):
             if surf_order[i] == 2:
                 # reduce the order of the shape function
                 mid2_nodes_index_list.append(
-                    self.get_2nd_order_point_index_surface(i).cpu())
+                    self.get_2nd_order_point_index_surface(i))
 
         if len(mid2_nodes_index_list) != 0:
             mid2_nodes_index = torch.cat(mid2_nodes_index_list, dim=0)
