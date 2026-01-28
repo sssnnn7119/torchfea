@@ -19,8 +19,28 @@ class NeoHookean(Materials_Base):
         if type(kappa) == float:
             kappa = torch.tensor([kappa], dtype=torch.float32)
 
-        self.mu = mu
-        self.kappa = kappa
+        self._mu = mu
+        self._kappa = kappa
+
+    @property
+    def mu(self) -> torch.Tensor:
+        return self._mu
+    
+    @mu.setter
+    def mu(self, value: torch.Tensor | float) -> None:
+        if type(value) == float:
+            value = torch.tensor([value], dtype=torch.float32)
+        self._mu = value
+
+    @property
+    def kappa(self) -> torch.Tensor:
+        return self._kappa
+    
+    @kappa.setter
+    def kappa(self, value: torch.Tensor | float) -> None:
+        if type(value) == float:
+            value = torch.tensor([value], dtype=torch.float32)
+        self._kappa = value
 
     def strain_energy_density_C3(self,
                                  F: torch.Tensor = None):

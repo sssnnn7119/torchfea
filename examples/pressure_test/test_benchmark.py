@@ -21,7 +21,7 @@ fem = torchfea.FEA_INP()
 #     'Z:\RESULT\T20240325195025_\Cache/TopOptRun.inp'
 # )
 
-fem.read_inp(current_path + '/C3D4Less.inp')
+fem.read_inp(current_path + '/C3D10.inp')
 
 fe = torchfea.from_inp(fem)
 fe.solver = torchfea.solver.StaticImplicitSolver()
@@ -40,12 +40,11 @@ rp = fe.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
 
 fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_model', set_nodes_name='surface_0_Head', rp_name=rp))
 
-
+mate: torchfea.materials.NeoHookean = fe.assembly.get_part('final_model').elems['element-0'].materials
+# mate.kappa = 12.
+# mate.kappa = 0.1
 
 t1 = time.time()
-
-torch.set_default_device('cpu')
-fe.change_device(torch.device('cpu'))
 
 fe.solve(tol_error=0.01)
 

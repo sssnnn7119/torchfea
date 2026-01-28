@@ -566,11 +566,11 @@ class ContactSelf(ContactBase):
             #     pdUe[point_pairs[1, i]] += pdUe_values1[i]
 
             pdU_values = torch.stack([pdUe_values0, pdUe_values1], dim=0)
-            tri_ind = point_pairs.cpu()
+            tri_ind = point_pairs
 
             pdU_indices = self.surface_element._elems[tri_ind].to(torch.int64)
             pdU_indices = torch.stack([pdU_indices*3, pdU_indices*3+1, pdU_indices*3+2], dim=-1)
-            pdU_indices = pdU_indices.to(self._assembly.device)
+            pdU_indices = pdU_indices.to(torch.get_default_device())
 
             # pdU = torch.zeros_like(Y).flatten().scatter_add_(0, pdU_indices.flatten(), pdU_values.flatten()).reshape([-1, 3])
 
@@ -619,7 +619,7 @@ class ContactSelf(ContactBase):
             ])
 
             pdU_2_indices_ = torch.stack([pdU_2_indices00, pdU_2_indices01, pdU_2_indices10, pdU_2_indices11], dim=1)
-            pdU_2_indices = torch.stack([pdU_2_indices_[0]*3+pdU_2_indices_[1], pdU_2_indices_[2]*3+pdU_2_indices_[3]], dim=0).to(self._assembly.device)
+            pdU_2_indices = torch.stack([pdU_2_indices_[0]*3+pdU_2_indices_[1], pdU_2_indices_[2]*3+pdU_2_indices_[3]], dim=0).to(torch.get_default_device())
 
             pdU_indices_total.append(pdU_indices.flatten())
             pdU_values_total.append(pdU_values.flatten())
@@ -1068,7 +1068,7 @@ class Contact(ContactBase):
 
             pdU_values = torch.cat([pdUe_values1.flatten(), pdUe_values2.flatten()], dim=0)
 
-            tri_ind = point_pairs.cpu()
+            tri_ind = point_pairs
             index_start1 = self._assembly.RGC_list_indexStart[instance1._RGC_index]
             index_start2 = self._assembly.RGC_list_indexStart[instance2._RGC_index]
 
@@ -1078,7 +1078,7 @@ class Contact(ContactBase):
             pdU_indices2 = self.surface_element2._elems[tri_ind[1]].to(torch.int64)
             pdU_indices2 = torch.stack([pdU_indices2*3, pdU_indices2*3+1, pdU_indices2*3+2], dim=-1) + index_start2
             
-            pdU_indices = torch.cat([pdU_indices1.flatten(), pdU_indices2.flatten()], dim=0).to(self._assembly.device)
+            pdU_indices = torch.cat([pdU_indices1.flatten(), pdU_indices2.flatten()], dim=0).to(torch.get_default_device())
 
             if if_onlyforce:
                 
@@ -1145,7 +1145,7 @@ class Contact(ContactBase):
             pdU_2_indices11[1] += index_start2
             
 
-            pdU_2_indices = torch.cat([pdU_2_indices00, pdU_2_indices01, pdU_2_indices10, pdU_2_indices11], dim=1).to(self._assembly.device)
+            pdU_2_indices = torch.cat([pdU_2_indices00, pdU_2_indices01, pdU_2_indices10, pdU_2_indices11], dim=1).to(torch.get_default_device())
 
             index_now += batch_size
 
