@@ -5,6 +5,7 @@ import sys
 import pathlib
 import numpy as np
 import torch
+import pyvista as pv
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 current_path = pathlib.Path(current_path)
@@ -61,12 +62,14 @@ torch.cuda.memory._record_memory_history(enabled=None)
 
 print('ok')
 print(result.GC[-6:])
-fe.assembly.get_instance('final_model').external_surface = 'surface_0_All'
+fe.assembly.get_part('final_model').exterior_surface = 'surface_0_All'
 fe.assembly.show_all(GC=result.GC)
 
 part = fe.assembly.get_part('final_model')
-
-sfs = part.elems['C3D4'].extract_boundary_surface_set()
-part.add_surface_set(name='externsurf', elements=sfs)
-part.surfaces.initialize(part)
-part.get_mesh('externsurf').plot()
+mesh = part.get_mesh()
+plotter = pv.Plotter()
+try:
+    plotter.add_mesh(mesh, show_edges=True)
+    plotter.show()
+finally:
+    plotter.close()

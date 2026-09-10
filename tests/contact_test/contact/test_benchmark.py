@@ -102,3 +102,4 @@ if extern_surf2.shape[1] > 3:
     plotter.add_mesh(mesh3, scalars='displacement', show_edges=True, line_width=1.0, edge_color='black')
 
 plotter.show()
+plotter.close()

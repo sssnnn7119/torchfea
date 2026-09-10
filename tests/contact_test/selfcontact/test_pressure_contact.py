@@ -97,3 +97,4 @@ plotter.add_mesh(
     opacity=1.0,
 )
 plotter.show()
+plotter.close()

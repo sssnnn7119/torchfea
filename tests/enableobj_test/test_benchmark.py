@@ -106,3 +106,4 @@ plotter.add_mesh(mesh, scalars='displacement')
 plotter.link_views()
 
 plotter.show()
+plotter.close()

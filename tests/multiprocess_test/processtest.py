@@ -87,3 +87,4 @@ if __name__ == '__main__':
     plotter = pv.Plotter()
     plotter.add_mesh(mesh, scalars='displacement')
     plotter.show()
+    plotter.close()

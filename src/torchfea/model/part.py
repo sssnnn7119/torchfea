@@ -137,8 +137,14 @@ class Part(Serializable):
         self.set_nodes: dict[str, np.ndarray] = {}
         """Set of nodes for the part."""
 
+        self.set_elements: dict[str, np.ndarray] = {}
+        """Named element sets for selection, export, and CAE preprocessing."""
+
         self.surfaces = _Surfaces()
         """Surfaces of the part."""
+
+        self.exterior_surface: str = "extern"
+        """Name of the immutable all-boundary surface set for this Part."""
 
         self.mass_matrix_indices: torch.Tensor = None
         """
@@ -226,6 +232,24 @@ class Part(Serializable):
             del self.set_nodes[name]
         else:
             raise ValueError(f"Node set '{name}' not found in the model.")
+
+    def add_element_set(self, name: str, element_indices: np.ndarray):
+        """Register a named set of zero-based element indices.
+
+        Element sets are deliberately lightweight: element connectivity remains
+        owned by ``self.elems`` while the set provides a stable CAE selection
+        for material assignment workflows and Abaqus-style export.
+        """
+        if isinstance(element_indices, torch.Tensor):
+            element_indices = element_indices.detach().cpu().numpy()
+        self.set_elements[name] = np.asarray(element_indices, dtype=int).ravel()
+        return name
+
+    def delete_element_set(self, name: str):
+        """Delete a named element set."""
+        if name not in self.set_elements:
+            raise ValueError(f"Element set '{name}' not found in the model.")
+        del self.set_elements[name]
         
 
     def add_surface_set(self, name: str, elements: list[tuple[np.ndarray, int]]):
@@ -239,6 +263,8 @@ class Part(Serializable):
         Returns:
             str: Name of the added surface set.
         """
+        if name == getattr(self, "exterior_surface", "extern") and name in self.surfaces:
+            raise ValueError(f"Part exterior surface '{name}' cannot be overwritten.")
         self.surfaces[name] = elements
         self.surfaces._initialized = False  # Mark surfaces as not initialized since we added new surface data
         return name
@@ -253,6 +279,8 @@ class Part(Serializable):
         Raises:
             KeyError: If the surface set doesn't exist.
         """
+        if name == getattr(self, "exterior_surface", "extern"):
+            raise ValueError(f"Part exterior surface '{name}' cannot be deleted.")
         if name in self.surfaces:
             del self.surfaces[name]
         else:
@@ -407,6 +435,11 @@ class Part(Serializable):
                 new_element.materials = dict(element.materials)
             else:
                 new_element.materials = element.materials
+            if hasattr(element, "material_element_indices"):
+                new_element.material_element_indices = {
+                    name: np.asarray(indices, dtype=int).copy()
+                    for name, indices in element.material_element_indices.items()
+                }
 
             if new_name == old_name:
                 self.delete_element(old_name)
@@ -500,6 +533,7 @@ class Part(Serializable):
         - node coordinates
         - element connectivity for all elements in the part
         - node sets from self.set_nodes
+        - element sets from self.set_elements
         - surfaces from self.surfaces
         """
         with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
@@ -538,6 +572,15 @@ class Part(Serializable):
                     f.write(', '.join(str(node_id + 1) for node_id in line_nodes) + '\n')
 
             # Write surfaces
+            for set_name, element_list in self.set_elements.items():
+                sorted_elements = sorted(np.asarray(element_list, dtype=int).tolist())
+                if not sorted_elements:
+                    continue
+                f.write(f'*Elset, elset={set_name}\n')
+                for i in range(0, len(sorted_elements), 10):
+                    f.write(', '.join(str(element_id + 1)
+                                      for element_id in sorted_elements[i:i + 10]) + '\n')
+
             for surface_name in self.surfaces.keys():
                 surface_items = self.surfaces[surface_name]
                 if len(surface_items) == 0:
@@ -619,21 +662,18 @@ class Part(Serializable):
 
     def get_mesh(self, surf_name: str = None) -> pv.PolyData:
         """
-        Get the mesh of the instance for visualization.
+        Get the Part mesh for visualization.
         Args:
             surf_name (str, optional): Name of the surface set to visualize. 
-                If None, use the external_surface attribute. Defaults to None.
+                If None, use the Part exterior surface. Defaults to None.
         Returns:
-            pv.PolyData: The mesh of the instance.
+            pv.PolyData: The mesh of the Part.
         """
         import pyvista as pv
         
         if surf_name is None:
-            tri_list = []
-            for surf_name in self.surfaces.keys():
-                tri_now = self.surfaces.get_trimesh(surf_name)
-                tri_list.append(tri_now)
-            triangles = torch.cat(tri_list, dim=0).cpu().numpy()
+            surf_name = getattr(self, "exterior_surface", "extern")
+            triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
         else:
             triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
         nodes_transformed = self.nodes.cpu().numpy()
@@ -645,12 +685,14 @@ class Part(Serializable):
 class Instance(BaseObj):
 
     _serialized_attributes_exclude = ['part', ]
-    def __init__(self, part_name: str, translation: list[float] = None, rotation: list[float] = None, external_surface: str = '') -> None:
+    def __init__(self, part_name: str, translation: list[float] = None, rotation: list[float] = None) -> None:
         """
         Create an instance of a part.
 
         Parameters:
-            part (Part): The part to be instantiated.
+            part_name: Name of the Part owned by the Assembly.
+            translation: Optional instance translation vector.
+            rotation: Optional instance rotation vector.
         """
 
         super().__init__()
@@ -671,9 +713,6 @@ class Instance(BaseObj):
             self._rotation: torch.Tensor = torch.randn(3) * 0.0
             """the rotation vector of the instance defined in exponential map"""
 
-        self.external_surface: str = external_surface
-        """the name of the external surface for visualization"""
-
         theta = torch.norm(self._rotation)
         if theta == 0:
             self.rotation_matrix = None
@@ -682,6 +721,24 @@ class Instance(BaseObj):
             r = r.view(3, 1)
             R = torch.cos(theta) * torch.eye(3) + (1 - torch.cos(theta)) * (r @ r.t()) + torch.sin(theta) * torch.tensor([[0, -r[2, 0], r[1, 0]], [r[2, 0], 0, -r[0, 0]], [-r[1, 0], r[0, 0], 0]])
             self.rotation_matrix = R
+
+    @property
+    def exterior_surface(self) -> str:
+        """Forward the Part exterior surface name for instance-level access."""
+        if self.part is None:
+            raise RuntimeError(
+                f"Instance '{self.part_name}' is not linked to a Part yet; "
+                "set the exterior surface on the Part before initialization.")
+        return self.part.exterior_surface
+
+    @exterior_surface.setter
+    def exterior_surface(self, name: str) -> None:
+        """Forward an instance assignment to its owning Part."""
+        if self.part is None:
+            raise RuntimeError(
+                f"Instance '{self.part_name}' is not linked to a Part yet; "
+                "set the exterior surface on the Part before initialization.")
+        self.part.exterior_surface = str(name).strip()
 
 
     @property
@@ -766,14 +823,14 @@ class Instance(BaseObj):
         Get the mesh of the instance for visualization.
         Args:
             surf_name (str, optional): Name of the surface set to visualize. 
-                If None, use the external_surface attribute. Defaults to None.
+                If None, use the Part exterior surface. Defaults to None.
         Returns:
             pv.PolyData: The mesh of the instance.
         """
         import pyvista as pv
 
         if surf_name is None:
-            surf_name = self.external_surface
+            surf_name = self.exterior_surface
         if surf_name == '':
             return pv.PolyData()
         
@@ -792,5 +849,8 @@ class Instance(BaseObj):
             print("No surface to show.")
             return
         plotter = pv.Plotter()
-        plotter.add_mesh(mesh, color='lightblue', show_edges=True)
-        plotter.show()
+        try:
+            plotter.add_mesh(mesh, color='lightblue', show_edges=True)
+            plotter.show()
+        finally:
+            plotter.close()

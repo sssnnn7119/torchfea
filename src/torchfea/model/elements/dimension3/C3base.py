@@ -471,8 +471,13 @@ class Element_3D(BaseElement):
         F = self.get_deformation_gradient(U=U)
 
         W = torch.zeros([self._num_gaussian, self._elems.shape[0]], device=F.device, dtype=F.dtype)
-        for mat_now in self._iter_material_values():
-            W = W + mat_now.strain_energy_density_C3(F=F,)
+        for mat_now, element_indices in self._iter_material_contributions():
+            if element_indices is None:
+                W = W + mat_now.strain_energy_density_C3(F=F,)
+                continue
+            indices = torch.as_tensor(element_indices, dtype=torch.long, device=F.device)
+            contribution = mat_now.strain_energy_density_C3(F=F[:, indices],)
+            W = W + torch.zeros_like(W).index_copy(1, indices, contribution)
 
         return W
 
@@ -566,16 +571,31 @@ class Element_3D(BaseElement):
         s = torch.zeros_like(F)
         C = torch.zeros([s.shape[0], s.shape[1], 3, 3, 3, 3], device=F.device, dtype=F.dtype)
 
-        for mat_now in self._iter_material_values():
+        for mat_now, element_indices in self._iter_material_contributions():
+            if element_indices is None:
+                s_now, C_now = mat_now.material_Constitutive_C3(
+                    F=F,
+                    J=J,
+                    Jneg=Jneg,
+                    invF=invF,
+                    I1=I1,
+                )
+                s = s + s_now
+                C = C + C_now
+                continue
+            indices = torch.as_tensor(element_indices, dtype=torch.long, device=F.device)
             s_now, C_now = mat_now.material_Constitutive_C3(
-                F=F,
-                J=J,
-                Jneg=Jneg,
-                invF=invF,
-                I1=I1,
+                F=F[:, indices],
+                J=J[:, indices],
+                Jneg=Jneg[:, indices],
+                invF=invF[:, indices],
+                I1=I1[:, indices],
             )
-            s = s + s_now
-            C = C + C_now
+            # Scatter each material contribution into the global element axis.
+            # ``index_add`` is intentional here: it preserves contributions
+            # if material regions overlap or contain repeated element ids.
+            s = s.index_add(1, indices, s_now)
+            C = C.index_add(1, indices, C_now)
 
         return s, C
 

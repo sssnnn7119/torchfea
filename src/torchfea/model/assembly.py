@@ -143,17 +143,20 @@ class Assembly(Serializable):
         mesh = self._instances[ins_name].get_mesh(RGC=RGC, surf_name=surf_name)
         pv.global_theme.allow_empty_mesh = True
         plotter = pv.Plotter()
-        plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
-        self._setup_point_picker(plotter, {ins_name: mesh})
-        plotter.add_legend()
-        plotter.show()
+        try:
+            plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
+            self._setup_point_picker(plotter, {ins_name: mesh})
+            plotter.add_legend()
+            plotter.show()
+        finally:
+            plotter.close()
 
     def show_all(self, GC: torch.Tensor = None):
         """
         Visualize all instances in the assembly.
         
-        before calling this function, make sure all instances have been assigned external_surface attribute.
-        assembly.get_instance('instance_name').external_surface = 'surface_set_name'
+        before calling this function, make sure each Part has an exterior
+        surface set (``part.exterior_surface``).
 
         Args:
             GC (torch.Tensor, optional): The generalized coordinates to use for visualization. Defaults to None.
@@ -161,11 +164,14 @@ class Assembly(Serializable):
         meshes = self.get_meshes(GC=GC)
         pv.global_theme.allow_empty_mesh = True
         plotter = pv.Plotter()
-        for ins_name, mesh in meshes.items():
-            plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
-        self._setup_point_picker(plotter, meshes)
-        plotter.add_legend()
-        plotter.show()
+        try:
+            for ins_name, mesh in meshes.items():
+                plotter.add_mesh(mesh, show_edges=True, opacity=1.0, label=ins_name)
+            self._setup_point_picker(plotter, meshes)
+            plotter.add_legend()
+            plotter.show()
+        finally:
+            plotter.close()
     # endregion
 
     # region Initialization
@@ -669,6 +675,10 @@ class Assembly(Serializable):
 
         if name in self._instances:
             raise ValueError(f"Instance with name {name} already exists in the assembly.")
+        if instance.part_name in self._parts:
+            # Keep the Instance exterior-surface property as a direct
+            # forwarding view of its Part as soon as the relationship exists.
+            instance.part = self._parts[instance.part_name]
         self._instances[name] = instance
         
     def get_instance(self, name: str) -> Instance:
@@ -970,8 +980,6 @@ class Assembly(Serializable):
         else:
             raise ValueError(f"Constraint '{name}' not found in the model.")
 
-    # region Boundary Management
-
     def add_boundary(self, boundary: object, name: str = None):
         """
         Add a boundary condition object to the model.
@@ -1002,7 +1010,5 @@ class Assembly(Serializable):
             del self._boundarys[name]
         else:
             raise ValueError(f"Boundary '{name}' not found in the model.")
-
-    # endregion
 
     # endregion

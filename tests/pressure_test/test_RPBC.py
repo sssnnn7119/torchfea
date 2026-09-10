@@ -73,3 +73,4 @@ mesh['displacement'] = Unorm
 plotter = pv.Plotter()
 plotter.add_mesh(mesh, scalars='displacement')
 plotter.show()
+plotter.close()

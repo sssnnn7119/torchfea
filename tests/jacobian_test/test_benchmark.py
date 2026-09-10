@@ -27,7 +27,7 @@ fem.read_inp(current_path + '/C3D4Less.inp')
 
 fe = torchfea.from_inp(fem)
 fe.solver = torchfea.solver.StaticImplicitSolver()
-fe.assembly.get_instance('final_model').external_surface = 'surface_0_All'
+fe.assembly.get_part('final_model').exterior_surface = 'surface_0_All'
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
 

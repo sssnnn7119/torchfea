@@ -82,7 +82,8 @@ class NeoHookean(Materials_Base):
         kappaJinvF = kappa * J * invF
 
         s = torch.zeros_like(F)
-        C = torch.zeros([s.shape[0], s.shape[1], 3, 3, 3, 3])
+        C = torch.zeros([s.shape[0], s.shape[1], 3, 3, 3, 3],
+                         device=F.device, dtype=F.dtype)
 
         s = FtMuJneg + (-1 / 3 * muI1invF + kappaJinvF * (J - 1))
 
@@ -145,7 +146,8 @@ class NeoHookeanLnJ(NeoHookean):
         muI1invF = mu * I1 * invF
 
         s = torch.zeros_like(F)
-        C = torch.zeros([s.shape[0], s.shape[1], 3, 3, 3, 3])
+        C = torch.zeros([s.shape[0], s.shape[1], 3, 3, 3, 3],
+                         device=F.device, dtype=F.dtype)
 
         s = FtMuJneg + -1 / 3 * muI1invF + kappa * torch.log(J) * invF
 

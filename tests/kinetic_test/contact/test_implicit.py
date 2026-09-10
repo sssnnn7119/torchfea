@@ -30,7 +30,7 @@ fem2.read_inp(current_path + '/base.inp')
 fe2 = torchfea.from_inp(fem2)
 
 fe.assembly.add_part(fe2.assembly.get_part('base'), name='base')
-fe.assembly.add_instance(torchfea.Instance(part=fe.assembly.get_part('base')), name='base')
+fe.assembly.add_instance(torchfea.Instance(part_name='base'), name='base')
 
 fe.assembly.get_part('rec').elems['element-0'].density = 1e-9
 fe.assembly.get_part('base').elems['element-0'].density = 1e-9
