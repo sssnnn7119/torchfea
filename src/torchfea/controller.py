@@ -214,6 +214,13 @@ def load_model(path: str) -> FEAController:
     for reference_point in assembly._reference_points.values():
         if reference_point._RGC_requirements is None:
             reference_point._RGC_requirements = 6
+    for part in assembly._parts.values():
+        if part.exterior_surface == "extern" and "extern" not in part.surfaces:
+            boundary = []
+            for element in part.elems.values():
+                boundary.extend(element.extract_boundary_surface_set())
+            if boundary:
+                part.surfaces[part.exterior_surface] = boundary
 
     if controller.solver is None:
         assembly.initialize()

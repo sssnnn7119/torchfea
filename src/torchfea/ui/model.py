@@ -19,6 +19,9 @@ from torchfea.cad import CADOperation, primitive_defaults
 from torchfea.interfaces import Serializable
 
 
+DEFAULT_MESH_SIZE = 1.5
+
+
 def enabled_value(value: bool | None) -> bool:
     """Convert the native enabled flag using Assembly's default semantics."""
     if value is None:
@@ -187,7 +190,7 @@ class CAEProject:
     constraints: list[ConstraintDefinition] = field(default_factory=list)
     solver_maximum_iteration: int = 100
     solver_tolerance: float = 1e-5
-    mesh_size: float = 1.5
+    mesh_size: float = DEFAULT_MESH_SIZE
 
     def to_dict(self) -> dict:
         # ``runtime_part`` is deliberately excluded: it contains live solver
@@ -498,7 +501,10 @@ class CAEProject:
                 None,
             )
         if mesh_size is None:
-            raise ValueError("The native model does not define a mesh size.")
+            # Discrete Parts already contain their FE mesh and therefore have
+            # no native CAD mesh size.  Keep the editor usable; this value is
+            # only used if the user later creates or remeshes a CAD Part.
+            mesh_size = DEFAULT_MESH_SIZE
         return cls(
             label="untitled",
             parts=part_definitions,

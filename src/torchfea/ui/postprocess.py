@@ -581,19 +581,7 @@ class VTKMeshViewer(QFrame):
             values = np.asarray(point, dtype=float).reshape(-1)
             if values.size != 3 or not np.all(np.isfinite(values)):
                 raise ValueError(f"Reference point '{point_name}' must contain three finite coordinates.")
-            record = {"name": point_name, "point": values}
-            for key in ("undeformed_point", "displacement"):
-                if key not in reference_point:
-                    continue
-                value = reference_point[key]
-                if hasattr(value, "detach"):
-                    value = value.detach().cpu().numpy()
-                value = np.asarray(value, dtype=float).reshape(-1)
-                if value.size != 3 or not np.all(np.isfinite(value)):
-                    raise ValueError(
-                        f"Reference point '{point_name}' metadata '{key}' is invalid.")
-                record[key] = value
-            normalized_points.append(record)
+            normalized_points.append({"name": point_name, "point": values})
         return normalized_points
 
     def _add_reference_points(self, reference_points) -> None:
@@ -617,17 +605,6 @@ class VTKMeshViewer(QFrame):
             radius = max(float(span) * .018, 1e-4)
         for point_record in normalized_points:
             point = point_record["point"]
-            undeformed_point = point_record.get("undeformed_point")
-            if undeformed_point is not None and np.linalg.norm(point - undeformed_point) > 1e-12:
-                connector = self._create_line_actor(undeformed_point, point, (.65, .70, .78), 2.0)
-                connector.SetPickable(False)
-                self._renderer.AddActor(connector)
-                self._actor_metadata[id(connector)] = {
-                    "is_reference_point_connector": True,
-                    "is_reference_point": True,
-                    "reference_point_name": point_record["name"],
-                }
-                self._actors_by_id[id(connector)] = connector
             source = vtkSphereSource()
             source.SetCenter(*point)
             source.SetRadius(radius)
@@ -759,7 +736,6 @@ class VTKMeshViewer(QFrame):
                     or actor_metadata.get("is_cad_edge")
                     or actor_metadata.get("is_brep_face")
                     or actor_metadata.get("is_reference_point")
-                    or actor_metadata.get("is_reference_point_connector")
                     or actor_metadata.get("is_load_glyph")):
                 continue
             prop = actor.GetProperty()
@@ -780,7 +756,6 @@ class VTKMeshViewer(QFrame):
             elif (not actor_metadata.get("is_cad_vertex")
                   and not actor_metadata.get("is_brep_face")
                   and not actor_metadata.get("is_reference_point")
-                  and not actor_metadata.get("is_reference_point_connector")
                   and not actor_metadata.get("is_load_glyph")):
                 actor.GetProperty().SetEdgeVisibility(self._edge_visibility)
         self._interactor.GetRenderWindow().Render()
@@ -957,9 +932,7 @@ class VTKMeshViewer(QFrame):
                 displacement = reference_displacement[int(rgc_index)].detach().cpu().numpy().reshape(-1)
                 if displacement.size < 3 or not np.all(np.isfinite(displacement[:3])):
                     continue
-                point_record["undeformed_point"] = point_record["point"].copy()
                 displacement = displacement[:3] * float(deformation_scale)
-                point_record["displacement"] = displacement.copy()
                 point_record["point"] = point_record["point"] + displacement
         self._renderer.RemoveAllViewProps()
         if self._cube_axes is not None:
@@ -970,10 +943,6 @@ class VTKMeshViewer(QFrame):
             scene_points.append(np.asarray(
                 [point_record["point"] for point_record in normalized_reference_points],
                 dtype=float))
-            undeformed = [point_record["undeformed_point"] for point_record in normalized_reference_points
-                          if "undeformed_point" in point_record]
-            if undeformed:
-                scene_points.append(np.asarray(undeformed, dtype=float))
         surface_actor_count = 0
         for instance_index, instance_name in enumerate(selected_instance_names):
             instance = assembly._instances[instance_name]
