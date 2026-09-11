@@ -752,6 +752,13 @@ class StaticImplicitSolver(BaseSolver):
         if alpha0 is None:
             alpha0 = 1e-10
 
+        matrix_size = int(K_indices.max().item()) + 1 if K_indices.numel() else 0
+        if matrix_size != R.numel():
+            raise ValueError(
+                "Reduced stiffness matrix and residual have different dimensions: "
+                f"matrix={matrix_size}, residual={R.numel()}. "
+                "Check active constraints and boundary conditions.")
+
         # result = torch.sparse.spsolve(torch.sparse_coo_tensor(K_indices, K_values, [R.shape[0], R.shape[0]]).to_sparse_csr(), R)
 
         # precondition for the linear equation

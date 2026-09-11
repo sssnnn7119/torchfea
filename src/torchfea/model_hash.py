@@ -210,6 +210,13 @@ def _canonical_serialized(value, *, key: str | None = None,
                 # allowed to change when initialize() rebuilds runtime state.
                 if item_key == "_RGC_requirements":
                     continue
+                # Assembly treats an unspecified enabled flag as enabled.
+                # Normalize both spellings so semantically identical models
+                # retain the same identity after loading and rebuilding.
+                if (item_key == "enabled" and isinstance(item, tuple)
+                        and len(item) == 2 and item[1] == "NoneType"):
+                    payload[item_key] = True
+                    continue
                 # Serializable marks unselected attributes as ``NoneType``.
                 if (isinstance(item, tuple) and len(item) == 2
                         and item[1] == "NoneType"):

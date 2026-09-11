@@ -196,8 +196,37 @@ def load_model(path: str) -> FEAController:
     with np.load(path, allow_pickle=True) as loaded:
         serialized_data = loaded['data']
         controller = FEAController._deserialize(serialized_data)
-        controller._model_hash = str(np.asarray(loaded['model_hash']).reshape(-1)[0])
-        return controller
+        stored_hash = str(np.asarray(loaded['model_hash']).reshape(-1)[0])
+
+    # Deserialization restores only persistent fields.  Rebuild all links,
+    # coordinate blocks, and enabled-object lists before the caller can use
+    # the model.  Assembly.initialize() normalizes enabled=None to True.
+    assembly = controller.assembly
+    objects = (
+        *assembly._instances.values(),
+        *assembly._loads.values(),
+        *assembly._constraints.values(),
+        *assembly._boundarys.values(),
+    )
+    for obj in objects:
+        if obj._RGC_requirements is None:
+            obj._RGC_requirements = [0]
+    for reference_point in assembly._reference_points.values():
+        if reference_point._RGC_requirements is None:
+            reference_point._RGC_requirements = 6
+
+    if controller.solver is None:
+        assembly.initialize()
+    else:
+        controller.initialize()
+
+    # The rebuilt model is the source of truth for the current identity.
+    # This also prevents runtime state restored from an archive from leaving
+    # a stale cached hash behind.
+    controller._model_hash = controller.get_model_hash()
+    if not stored_hash:
+        raise ValueError("The model archive contains an empty model hash.")
+    return controller
 
 def retrieve_source_code(path: str, path_out: str):
     """

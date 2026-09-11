@@ -19,6 +19,15 @@ from torchfea.cad import CADOperation, primitive_defaults
 from torchfea.interfaces import Serializable
 
 
+def enabled_value(value: bool | None) -> bool:
+    """Convert the native enabled flag using Assembly's default semantics."""
+    if value is None:
+        return True
+    if not isinstance(value, bool):
+        raise TypeError(f"enabled must be bool or None, got {type(value).__name__}.")
+    return value
+
+
 def parse_indices(text: str) -> np.ndarray:
     """Parse ``0, 3:6, 12`` as zero-based inclusive integer ids."""
     values: list[int] = []
@@ -391,7 +400,7 @@ class CAEProject:
                 name=str(name), part_name=str(instance.part_name),
                 translation=tensor_list(instance._translation),
                 rotation=tensor_list(instance._rotation),
-                enabled=bool(instance.enabled)))
+                enabled=enabled_value(instance.enabled)))
 
         reference_points = [ReferencePointDefinition(
             name=str(name), point=tensor_list(point.node))
@@ -405,14 +414,14 @@ class CAEProject:
                     name=str(name), kind="reference_point",
                     reference_point=str(boundary.rp_name),
                     dofs=[int(item) for item in boundary.indexDoF],
-                    enabled=bool(boundary.enabled)))
+                    enabled=enabled_value(boundary.enabled)))
             elif isinstance(boundary, boundarys.Boundary_Condition):
                 boundaries.append(BoundaryDefinition(
                     name=str(name), kind="nodes",
                     instance=str(boundary.instance_name),
                     node_set=str(boundary.set_nodes_name),
                     dofs=[int(item) for item in boundary.indexDoF],
-                    enabled=bool(boundary.enabled)))
+                    enabled=enabled_value(boundary.enabled)))
             else:
                 raise ValueError(f"Unsupported native boundary '{type(boundary).__name__}'.")
 
@@ -424,7 +433,7 @@ class CAEProject:
                     instance=str(constraint.instance_name),
                     node_set=str(constraint.set_nodes_name),
                     reference_point=str(constraint.rp_name),
-                    enabled=bool(constraint.enabled)))
+                    enabled=enabled_value(constraint.enabled)))
             else:
                 raise ValueError(f"Unsupported native constraint '{type(constraint).__name__}'.")
 
@@ -434,32 +443,32 @@ class CAEProject:
             if isinstance(load, loads.Pressure):
                 item = LoadDefinition(str(name), "pressure", load.instance_name,
                                       target=load.surface_set, values=values[:1],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.BodyForce):
                 item = LoadDefinition(str(name), "body_force", load._instance_name,
                                       target=load._element_name, values=values[:3],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Concentrate_Force):
                 item = LoadDefinition(str(name), "concentrated_force",
                                       target=load.rp_name, values=values[:3],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Moment):
                 item = LoadDefinition(str(name), "moment", target=load.rp_name,
-                                      values=values[:3], enabled=bool(load.enabled))
+                                      values=values[:3], enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Spring_RP_RP):
                 item = LoadDefinition(str(name), "spring_rp_rp", target=load.rp_name1,
                                       target2=load.rp_name2, values=values[:2],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Spring_RP_Point):
                 item = LoadDefinition(str(name), "spring_rp_point", target=load.rp_name,
                                       values=tensor_list(load.point) + [float(load.k),
                                           -1.0 if load.rest_length is None else float(load.rest_length)],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Penalty_DoF):
                 item = LoadDefinition(str(name), "penalty_dof", target=load.obj_name,
                                       target2=load.obj_type,
                                       values=[float(load.s), float(load.target), float(load.k)],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.ContactSelf):
                 item = LoadDefinition(str(name), "contact_self", load.instance_name,
                                       target=load.surface_name,
@@ -467,7 +476,7 @@ class CAEProject:
                                               float(load._ignore_max_normal),
                                               float(load._initial_detact_ratio), *values[:6],
                                               float(load.mesh_size)],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             elif isinstance(load, loads.Contact):
                 item = LoadDefinition(str(name), "contact", load.instance_name1,
                                       target=load.surface_name1,
@@ -475,7 +484,7 @@ class CAEProject:
                                       target2=load.surface_name2,
                                       values=[*values[:6],
                                               float(load.mesh_size)],
-                                      enabled=bool(load.enabled))
+                                      enabled=enabled_value(load.enabled))
             else:
                 raise ValueError(f"Unsupported native load '{type(load).__name__}'.")
             project_loads.append(item)
