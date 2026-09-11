@@ -128,4 +128,3 @@ class Penalty_DoF(BaseLoad):
         arr = RGC_remain_index[self._rgc_list_index].reshape(-1)
         arr[self._rgc_local_flat_index] = True
         return RGC_remain_index
-

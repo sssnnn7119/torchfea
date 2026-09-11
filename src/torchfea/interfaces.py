@@ -23,12 +23,10 @@ class Serializable():
         """Register subclasses in the class registry for factory method."""
         cls._subclasses[cls._get_obj_name()] = cls
         cls._subclass_source_code[cls._get_obj_name()] = cls._get_source_code()
-        mro = inspect.getmro(cls)
-        for klass in mro:
-            if klass is object or not hasattr(klass, '_serialized_attributes_exclude'):
-                continue
-            cls._serialized_attributes_exclude += klass._serialized_attributes_exclude
-            cls._serialized_attributes_exclude = list(set(cls._serialized_attributes_exclude))
+        excluded = []
+        for klass in reversed(inspect.getmro(cls)):
+            excluded.extend(klass.__dict__.get('_serialized_attributes_exclude', ()))
+        cls._serialized_attributes_exclude = list(dict.fromkeys(excluded))
 
     @classmethod
     def _get_source_code(cls) -> str:
@@ -42,14 +40,6 @@ class Serializable():
             str: Concatenated source code of all classes in the MRO.
         """
         source_parts: list[str] = []
-        # seen: set[str] = set()
-        # for klass in reversed(cls.__mro__):
-        #     if klass is object or klass is Serializable:
-        #         continue
-        #     if klass.__name__ in seen:
-        #         continue
-        #     seen.add(klass.__name__)
-        #     source_parts.append(inspect.getsource(klass))
         source_parts.append(inspect.getsource(cls))
         return "\n".join(source_parts)
 
@@ -104,7 +94,9 @@ class Serializable():
         elif isinstance(obj, np.ndarray):
             return (obj, type(obj).__name__)
         else:
-            return ()
+            raise TypeError(
+                f"Cannot serialize object of type {type(obj).__module__}."
+                f"{type(obj).__qualname__}.")
 
     def _serialize(self) -> dict:
         """
@@ -155,8 +147,6 @@ class Serializable():
             return {key: Serializable._deserialize_obj(val) for key, val in value.items()}
         elif type_name == 'ndarray':
             return value
-        elif type_name == 'NoneType':
-            return None
         else:
             raise ValueError(f"Unknown type name '{type_name}' during deserialization.")
     
@@ -179,4 +169,3 @@ class Serializable():
         return obj
     
 Serializable._subclass_source_code['Serializable'] = inspect.getsource(Serializable)
-

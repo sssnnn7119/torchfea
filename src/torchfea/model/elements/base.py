@@ -115,35 +115,23 @@ class BaseElement(Serializable):
         pass
 
     def _iter_material_values(self):
-        """Iterate materials with backward compatibility for legacy single-material assignment."""
-        mats = self.materials
-        if isinstance(mats, dict):
-            return mats.values()
-
-        if isinstance(mats, materials.Materials_Base):
-            # Backward compatibility if external code directly assigns single material
-            return [mats]
-
-        raise TypeError("materials must be a dict[str, Materials_Base] or a Materials_Base instance")
+        """Iterate the named materials assigned to this element block."""
+        if not isinstance(self.materials, dict):
+            raise TypeError("materials must be a dict[str, Materials_Base]")
+        return self.materials.values()
 
     def _iter_material_contributions(self):
         """Yield ``(material, local element indices)`` contributions.
 
-        ``None`` indices preserve the historical behavior where all named
-        materials are accumulated over the whole element block.  A populated
-        assignment map activates one-material-per-element semantics.
+        Empty assignments apply every named material to the whole element
+        block; populated assignments select element regions.
         """
-        # Older serialized elements predate ``material_element_indices``.
-        # Treat them exactly like legacy named-material elements instead of
-        # failing while a native model is being loaded.
-        assignments = getattr(self, "material_element_indices", {})
+        assignments = self.material_element_indices
         if not assignments:
             yield from ((material, None) for material in self._iter_material_values())
             return
-        if not isinstance(self.materials, dict):
-            raise TypeError("Material region assignments require named materials.")
         for name, material in self.materials.items():
-            indices = np.asarray(assignments.get(name, []), dtype=int).ravel()
+            indices = np.asarray(assignments[name], dtype=int).ravel()
             if len(indices):
                 yield material, indices
 
@@ -169,17 +157,10 @@ class BaseElement(Serializable):
             raise TypeError("mat must be Materials_Base or dict[str, Materials_Base]")
 
         if name is None:
-            number = len(self.materials) if isinstance(self.materials, dict) else 0
-            name = f"material-{number}"
-
-        if not isinstance(self.materials, dict):
-            # Normalize legacy assignment to dict on first set
-            self.materials = {}
+            name = f"material-{len(self.materials)}"
 
         self.materials[name] = mat
         if element_indices is not None:
-            if not hasattr(self, "material_element_indices"):
-                self.material_element_indices = {}
             indices = np.asarray(element_indices, dtype=int).ravel()
             if np.any(indices < 0) or np.any(indices >= len(self._elems)):
                 raise ValueError(f"Material '{name}' contains an out-of-range element index.")
@@ -189,25 +170,14 @@ class BaseElement(Serializable):
         """Delete one material by name, or clear all when name is None."""
         mats = self.materials
 
-        if isinstance(mats, dict):
-            if name is None:
-                mats.clear()
-                self.material_element_indices = {}
-                return
-            if name not in mats:
-                raise ValueError(f"Material '{name}' not found in this element")
-            del mats[name]
-            getattr(self, "material_element_indices", {}).pop(name, None)
+        if name is None:
+            mats.clear()
+            self.material_element_indices.clear()
             return
-
-        if isinstance(mats, materials.Materials_Base):
-            if name is not None:
-                raise ValueError("Legacy single-material mode does not support named deletion")
-            self.materials = {}
-            self.material_element_indices = {}
-            return
-
-        raise TypeError("materials must be a dict[str, Materials_Base] or a Materials_Base instance")
+        if name not in mats:
+            raise ValueError(f"Material '{name}' not found in this element")
+        del mats[name]
+        self.material_element_indices.pop(name, None)
         
     def set_required_DoFs(
             self, RGC_remain_index: np.ndarray) -> np.ndarray:

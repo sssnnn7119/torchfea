@@ -10,6 +10,10 @@ from .result import DynamicResult
 
 class DynamicExplicitSolver(BaseSolver):
 
+    _serialized_attributes_exclude = [
+        '_next_storage_time', '_GC_list', '_GV_list', '_GA_list',
+    ]
+
     def __init__(self, time_end: float = 1.0, time_per_storage: float = 1e-4) -> None:
         """
         Initialize the Explicit Dynamic Solver.

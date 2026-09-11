@@ -292,4 +292,3 @@ class Couple(BaseConstraint):
                     theta) + rotation_vector * (rotation_vector * vector0).sum(
                         dim=1).unsqueeze(-1) * (1 - torch.cos(theta))
         return vector1
-

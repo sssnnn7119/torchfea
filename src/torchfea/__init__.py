@@ -71,7 +71,8 @@ from .inp import FEA_INP
 from .controller import FEAController, load_model, retrieve_source_code
 from .model import Part, Instance, ReferencePoint, Assembly, WorkCondition
 from .model import materials, elements, loads, constraints, surfaces, boundarys
-from .model import cad
+from . import cad
+from .cad import CADModel, CADHistory, CADOperation
 from . import solver
 
 def from_inp(inp: FEA_INP, create_instance=True) -> FEAController:

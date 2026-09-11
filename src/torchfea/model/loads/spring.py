@@ -42,6 +42,8 @@ class Spring_RP_RP(BaseLoad):
         rest_length (optional): rest length L0; defaults to initial distance between RPs
     """
 
+    _serialized_attributes_exclude = ['_rp_index1', '_rp_index2', '_idx_tr1', '_idx_tr2']
+
     def __init__(self, rp_name1: str, rp_name2: str, k: float, rest_length: float | None = None) -> None:
         super().__init__()
         self.rp_name1 = rp_name1
@@ -172,6 +174,8 @@ class Spring_RP_Point(BaseLoad):
         k: spring stiffness
         rest_length (optional): rest length L0; defaults to initial distance between RP and point
     """
+
+    _serialized_attributes_exclude = ['_rp_index', '_idx_tr']
 
     def __init__(self, rp_name: str, point: list[float], k: float, rest_length: float = None) -> None:
         

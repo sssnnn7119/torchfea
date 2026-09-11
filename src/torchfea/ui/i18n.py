@@ -7,7 +7,9 @@ from PySide6.QtWidgets import QComboBox
 
 
 def _settings() -> QSettings:
-    return QSettings("torchfea", "cae-ui")
+    # Share the setting namespace with MorphOpt so the two UIs keep one
+    # language preference when they are hosted in the same application.
+    return QSettings("MorphOptUI", "ui")
 
 
 def is_en() -> bool:
@@ -23,7 +25,7 @@ class LanguageSelector(QComboBox):
         super().__init__(parent)
         self.addItem("中文", "zh")
         self.addItem("English", "en")
-        self.setFixedWidth(105)
+        self.setFixedWidth(110)
         current = _settings().value("language", "zh", str)
         self.setCurrentIndex(max(0, self.findData(current)))
         self.currentIndexChanged.connect(lambda: self._changed(callback))

@@ -4,4 +4,3 @@ from .assembly import Assembly, WorkCondition
 from . import elements, constraints, loads, boundarys
 from .elements import materials
 from .elements.dimension3 import surfaces
-from . import cad

@@ -1,21 +1,22 @@
-"""Persistent CAE definition and its conversion to native torchfea objects.
+"""CAE editor definitions and conversion to/from native torchfea objects.
 
-The UI keeps a compact JSON-safe definition rather than serialising Qt state.
-``build_controller`` is the only boundary where this definition becomes a
-``Part``/``Assembly``/``FEAController`` ready for the existing solver.
+The native model is the only persisted representation.  ``build_controller``
+stores the CAD history, assembled discrete model, sets, materials, loads and
+constraints in the normal torchfea object graph.  ``from_controller`` reads
+that graph back into the editable Qt-facing dataclasses; no UI-side JSON or
+metadata blob is written to disk.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import json
-from pathlib import Path
 import re
 
 import numpy as np
 import torch
 
-from .logging_utils import LOGGER
+from torchfea.cad import CADOperation, primitive_defaults
+from torchfea.interfaces import Serializable
 
 
 def parse_indices(text: str) -> np.ndarray:
@@ -48,43 +49,21 @@ def parse_faces(text: str) -> list[tuple[np.ndarray, int]]:
 
 
 @dataclass
-class CADOperation:
-    """One editable native Gmsh OCC feature in a Part history."""
-
-    id: str
-    kind: str  # OCC primitive | boolean | translate | rotate | dilate | mirror
-    values: dict[str, float | int] = field(default_factory=dict)
-    inputs: list[str] = field(default_factory=list)
-
-
-@dataclass
 class GeometryDefinition:
-    kind: str = "box"  # legacy/base feature kind
-    # box: xmin xmax ymin ymax zmin zmax nx ny nz
-    # cylinder: x y z dx dy dz radius mesh_size
-    values: dict[str, float | int] = field(default_factory=lambda: {
-        "xmin": 0.0, "xmax": 20.0, "ymin": 0.0, "ymax": 10.0,
-        "zmin": 0.0, "zmax": 5.0, "nx": 9, "ny": 5, "nz": 3,
-        "x": 0.0, "y": 0.0, "z": 0.0, "dx": 0.0, "dy": 0.0,
-        "dz": 20.0, "radius": 5.0, "mesh_size": 1.5,
-    })
-    operations: list[CADOperation] = field(default_factory=list)
+    """Geometry source used by one Part.
 
-    def ensure_operations(self) -> list[CADOperation]:
-        """Promote a legacy one-primitive geometry to an OCC feature list."""
-        if not self.operations:
-            LOGGER.info("promoting legacy GeometryDefinition to OCC history: kind=%s", self.kind)
-            if self.kind == "box" and "xmin" in self.values:
-                values = {
-                    "x": float(self.values["xmin"]), "y": float(self.values["ymin"]), "z": float(self.values["zmin"]),
-                    "dx": float(self.values["xmax"]) - float(self.values["xmin"]),
-                    "dy": float(self.values["ymax"]) - float(self.values["ymin"]),
-                    "dz": float(self.values["zmax"]) - float(self.values["zmin"]),
-                }
-            else:
-                values = {key: value for key, value in self.values.items() if key != "mesh_size"}
-            self.operations = [CADOperation("Base-1", self.kind, values)]
-        return self.operations
+    ``cad`` Parts are replayed from OCC operations.  ``discrete`` Parts are
+    already-meshed native :class:`torchfea.model.Part` objects, typically
+    imported from an INP file and saved in the normal controller ``.npz``.
+    The native object is kept at runtime; ``discrete_data`` is only an
+    in-memory undo/redo snapshot and is not a second model file.
+    """
+
+    operations: list[CADOperation] = field(
+        default_factory=lambda: [CADOperation("Base-1", "box", primitive_defaults("box"))])
+    source: str = "cad"
+    discrete_data: object = field(default=None, repr=False, compare=False)
+    runtime_part: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -124,38 +103,14 @@ class MaterialDefinition:
 class PartDefinition:
     name: str = "Part-1"
     geometry: GeometryDefinition = field(default_factory=GeometryDefinition)
-    young: float = 210000.0
-    poisson: float = 0.3
     node_sets: list[NamedSet] = field(default_factory=list)
     element_sets: list[NamedSet] = field(default_factory=list)
     surface_sets: list[NamedSet] = field(default_factory=list)
     # The complete exterior boundary belongs to the Part, not to an Instance.
     # It is always present at runtime and may only be renamed.
     exterior_surface: str = "extern"
-    # Keep this field after the legacy fields so positional construction of a
-    # PartDefinition from older scripts still maps node/element/surface sets
-    # to the same parameters.
     materials: list[MaterialDefinition] = field(default_factory=lambda: [MaterialDefinition()])
-    # Density belongs to the Part material collection and is shared by all
-    # material assignments on this Part.  Keep it after ``materials`` for
-    # positional compatibility with older UI scripts.
     density: float = 1.0
-
-    def __post_init__(self):
-        # Preserve the legacy constructor ``PartDefinition(young=..., poisson=...)``
-        # when no explicit material collection was supplied.
-        if not self.materials:
-            self.materials = [MaterialDefinition(
-                young=float(self.young), poisson=float(self.poisson))]
-        elif (len(self.materials) == 1
-              and self.materials[0].name == "Material-1"
-              and self.materials[0].kind == "linear_elastic"
-              and self.materials[0].element_set == "all"
-              and self.materials[0].young == 210000.0
-              and self.materials[0].poisson == .3
-              and (self.young != 210000.0 or self.poisson != .3)):
-            self.materials[0].young = float(self.young)
-            self.materials[0].poisson = float(self.poisson)
 
 
 @dataclass
@@ -164,8 +119,7 @@ class InstanceDefinition:
     part_name: str = "Part-1"
     translation: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rotation: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    # Compatibility field for old JSON.  The UI/controller no longer use it.
-    exterior: str = ""
+    enabled: bool = True
 
 
 @dataclass
@@ -180,6 +134,23 @@ class BoundaryDefinition:
     instance: str = "Part-1-1"
     node_set: str = "nodes_xmin"
     dofs: list[int] = field(default_factory=lambda: [0, 1, 2])
+    # ``nodes`` uses an instance node set; ``reference_point`` constrains the
+    # six rigid-body degrees of freedom of one assembly reference point.
+    kind: str = "nodes"
+    reference_point: str = ""
+    enabled: bool = True
+
+
+@dataclass
+class ConstraintDefinition:
+    """An assembly kinematic constraint backed by torchfea.constraints."""
+
+    name: str = "Constraint-1"
+    kind: str = "couple"
+    instance: str = "Part-1-1"
+    node_set: str = "surface_all"
+    reference_point: str = "RP-1"
+    enabled: bool = True
 
 
 @dataclass
@@ -189,6 +160,11 @@ class LoadDefinition:
     instance: str = "Part-1-1"
     target: str = "surface_zmax"  # surface / element name / reference point
     values: list[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
+    # Optional second target/instance support for pair-wise contacts and
+    # springs.
+    instance2: str = ""
+    target2: str = ""
+    enabled: bool = True
 
 
 @dataclass
@@ -199,17 +175,333 @@ class CAEProject:
     reference_points: list[ReferencePointDefinition] = field(default_factory=list)
     boundaries: list[BoundaryDefinition] = field(default_factory=list)
     loads: list[LoadDefinition] = field(default_factory=list)
+    constraints: list[ConstraintDefinition] = field(default_factory=list)
     solver_maximum_iteration: int = 100
     solver_tolerance: float = 1e-5
     mesh_size: float = 1.5
 
     def to_dict(self) -> dict:
-        data = asdict(self)
-        # Do not persist the obsolete instance-level exterior-surface field;
-        # ``from_dict`` still accepts it so older projects remain readable.
-        for instance in data.get("instances", []):
-            instance.pop("exterior", None)
-        return data
+        # ``runtime_part`` is deliberately excluded: it contains live solver
+        # state and is already represented by ``discrete_data`` when an undo
+        # snapshot needs to recreate a discrete Part.
+        return {
+            "label": self.label,
+            "parts": [
+                {
+                    "name": part.name,
+                    "geometry": {
+                        "source": part.geometry.source,
+                        "operations": [asdict(operation) for operation in part.geometry.operations],
+                        "discrete_data": part.geometry.discrete_data,
+                    },
+                    "node_sets": [asdict(item) for item in part.node_sets],
+                    "element_sets": [asdict(item) for item in part.element_sets],
+                    "surface_sets": [asdict(item) for item in part.surface_sets],
+                    "exterior_surface": part.exterior_surface,
+                    "materials": [asdict(item) for item in part.materials],
+                    "density": part.density,
+                }
+                for part in self.parts
+            ],
+            "instances": [asdict(item) for item in self.instances],
+            "reference_points": [asdict(item) for item in self.reference_points],
+            "boundaries": [asdict(item) for item in self.boundaries],
+            "loads": [asdict(item) for item in self.loads],
+            "constraints": [asdict(item) for item in self.constraints],
+            "solver_maximum_iteration": self.solver_maximum_iteration,
+            "solver_tolerance": self.solver_tolerance,
+            "mesh_size": self.mesh_size,
+        }
+
+    @classmethod
+    def from_controller(cls, controller) -> "CAEProject":
+        """Read the complete CAE definition from a native FEA model.
+
+        CAD operations come from ``FEAController.cad``.  The remaining CAE
+        objects are already represented by the native ``Assembly`` and its
+        ``Part``/``Instance``/load/constraint objects, so this conversion is
+        deliberately a reader rather than a second persistence format.
+        """
+        assembly = controller.assembly
+        cad_model = controller.cad
+
+        def tensor_list(value) -> list[float]:
+            if torch.is_tensor(value):
+                value = value.detach().cpu().reshape(-1).tolist()
+            return [float(item) for item in value]
+
+        def native_indices(value) -> str:
+            values = sorted({int(item) for item in np.asarray(value, dtype=int).reshape(-1)})
+            ranges: list[str] = []
+            start = previous = None
+            for item in values:
+                if start is None:
+                    start = previous = item
+                elif item == previous + 1:
+                    previous = item
+                else:
+                    ranges.append(str(start) if start == previous else f"{start}:{previous}")
+                    start = previous = item
+            if start is not None:
+                ranges.append(str(start) if start == previous else f"{start}:{previous}")
+            return ", ".join(ranges)
+
+        def native_surface(value) -> str:
+            tokens = []
+            for element_ids, side in value:
+                tokens.extend(
+                    f"{int(element)}:{int(side) + 1}"
+                    for element in np.asarray(element_ids, dtype=int).reshape(-1))
+            return ", ".join(tokens)
+
+        def ensure_native_exterior(native_part):
+            """Make imported defaults explicit without mutating the controller.
+
+            ``from_controller`` is a UI projection and must not alter the
+            native model that was just loaded.  In particular, adding the
+            generated ``surface_all``/surface-node sets directly to that
+            Part used to change its serialized model hash before result
+            validation.  Rehydrate a lightweight serialized copy and add the
+            editor-only defaults there instead.
+            """
+            native_part = Serializable._deserialize(native_part._serialize())
+            exterior = str(native_part.exterior_surface)
+            if exterior not in native_part.surfaces:
+                boundary = []
+                for element in native_part.elems.values():
+                    boundary.extend(element.extract_boundary_surface_set())
+                if boundary:
+                    native_part.surfaces[exterior] = boundary
+                else:
+                    raise ValueError(
+                        f"Discrete Part has no boundary surface: '{type(native_part).__name__}'.")
+            native_part.exterior_surface = exterior
+            native_part.set_nodes.setdefault("all", np.arange(len(native_part.nodes), dtype=int))
+            if native_part.surfaces[exterior]:
+                face_nodes = []
+                for element_ids, side in native_part.surfaces[exterior]:
+                    element_ids = np.asarray(element_ids, dtype=int).reshape(-1)
+                    element = next(iter(native_part.elems.values()))
+                    face_nodes.append(
+                        element._elems[element_ids][:, element.surfaceid_map[int(side)]]
+                        .detach().cpu().numpy().reshape(-1))
+                native_part.set_nodes.setdefault("surface_all", np.unique(np.concatenate(face_nodes)))
+            for name, element in native_part.elems.items():
+                native_part.set_elements.setdefault(
+                    name if name != "C3D4" else "all",
+                    np.arange(len(element._elems), dtype=int))
+            return native_part
+
+        def geometry_for(part_name: str, native_part) -> GeometryDefinition:
+            history = cad_model.parts.get(part_name)
+            operations = list(history.operations) if history is not None else []
+            if operations:
+                return GeometryDefinition(operations=operations, source="cad")
+            native_part = ensure_native_exterior(native_part)
+            return GeometryDefinition(
+                operations=[], source="discrete",
+                discrete_data=native_part._serialize(), runtime_part=native_part)
+
+        def material_definitions(native_part):
+            from torchfea.model.elements.materials import LinearElastic, NeoHookean, NeoHookeanLnJ
+
+            element_sets = {
+                name: np.asarray(indices, dtype=int).reshape(-1)
+                for name, indices in native_part.set_elements.items()
+            }
+            material_objects = {}
+            material_regions = {}
+            density_values = []
+            for element in native_part.elems.values():
+                if element.density is not None:
+                    density_values.extend(tensor_list(element.density))
+                for name, material in element.materials.items():
+                    material_objects.setdefault(name, material)
+                for name, indices in element.material_element_indices.items():
+                    material_regions.setdefault(name, np.asarray(indices, dtype=int).reshape(-1))
+            count = sum(len(element._elems) for element in native_part.elems.values())
+            definitions = []
+            derived_sets = []
+            for name, material in material_objects.items():
+                if isinstance(material, LinearElastic):
+                    kind = "linear_elastic"
+                    values = {"young": float(material.E.reshape(-1)[0]),
+                              "poisson": float(material.nu.reshape(-1)[0])}
+                elif isinstance(material, NeoHookeanLnJ):
+                    kind = "neo_hookean_lnj"
+                    values = {"mu": float(material.mu.reshape(-1)[0]),
+                              "kappa": float(material.kappa.reshape(-1)[0])}
+                elif isinstance(material, NeoHookean):
+                    kind = "neo_hookean"
+                    values = {"mu": float(material.mu.reshape(-1)[0]),
+                              "kappa": float(material.kappa.reshape(-1)[0])}
+                else:
+                    raise ValueError(
+                        f"Unsupported native material '{type(material).__name__}' on Part.")
+                region = material_regions.get(name)
+                target = "all"
+                if region is not None and len(region) != count:
+                    for set_name, set_indices in element_sets.items():
+                        if np.array_equal(np.sort(region), np.sort(set_indices)):
+                            target = set_name
+                            break
+                    else:
+                        target = f"material_{name}"
+                        derived_sets.append(NamedSet(target, native_indices(region)))
+                definitions.append(MaterialDefinition(name=name, kind=kind,
+                                                       element_set=target, **values))
+            if not definitions:
+                raise ValueError(f"Part '{type(native_part).__name__}' has no materials.")
+            if not density_values:
+                raise ValueError(f"Part '{type(native_part).__name__}' has no density.")
+            density = float(np.mean(density_values))
+            return definitions, density, derived_sets
+
+        part_definitions = []
+        for name, native_part in assembly._parts.items():
+            materials, density, derived_sets = material_definitions(native_part)
+            exterior = str(native_part.exterior_surface)
+            surfaces = []
+            for surface_name in native_part.surfaces.keys():
+                surface_name = str(surface_name)
+                if surface_name == exterior or surface_name == "extern" or surface_name.startswith("gmsh_surface_"):
+                    continue
+                surfaces.append(NamedSet(surface_name, native_surface(native_part.surfaces[surface_name])))
+            nodes = []
+            for set_name, indices in native_part.set_nodes.items():
+                set_name = str(set_name)
+                if (set_name in {"all", "surface_all"}
+                        or set_name.startswith("gmsh_nodes_")
+                        or set_name.startswith("surface_") and set_name.endswith("_nodes")):
+                    continue
+                nodes.append(NamedSet(set_name, native_indices(indices)))
+            elements = [NamedSet(str(set_name), native_indices(indices))
+                        for set_name, indices in native_part.set_elements.items()
+                        if str(set_name) != "all"]
+            elements.extend(derived_sets)
+            part_definitions.append(PartDefinition(
+                name=str(name), geometry=geometry_for(str(name), native_part),
+                materials=materials, density=density,
+                node_sets=nodes, element_sets=elements,
+                surface_sets=surfaces, exterior_surface=exterior))
+
+        instances = []
+        for name, instance in assembly._instances.items():
+            instances.append(InstanceDefinition(
+                name=str(name), part_name=str(instance.part_name),
+                translation=tensor_list(instance._translation),
+                rotation=tensor_list(instance._rotation),
+                enabled=bool(instance.enabled)))
+
+        reference_points = [ReferencePointDefinition(
+            name=str(name), point=tensor_list(point.node))
+            for name, point in assembly._reference_points.items()]
+
+        boundaries = []
+        from torchfea.model import boundarys, constraints, loads
+        for name, boundary in assembly._boundarys.items():
+            if isinstance(boundary, boundarys.Boundary_Condition_RP):
+                boundaries.append(BoundaryDefinition(
+                    name=str(name), kind="reference_point",
+                    reference_point=str(boundary.rp_name),
+                    dofs=[int(item) for item in boundary.indexDoF],
+                    enabled=bool(boundary.enabled)))
+            elif isinstance(boundary, boundarys.Boundary_Condition):
+                boundaries.append(BoundaryDefinition(
+                    name=str(name), kind="nodes",
+                    instance=str(boundary.instance_name),
+                    node_set=str(boundary.set_nodes_name),
+                    dofs=[int(item) for item in boundary.indexDoF],
+                    enabled=bool(boundary.enabled)))
+            else:
+                raise ValueError(f"Unsupported native boundary '{type(boundary).__name__}'.")
+
+        project_constraints = []
+        for name, constraint in assembly._constraints.items():
+            if isinstance(constraint, constraints.Couple):
+                project_constraints.append(ConstraintDefinition(
+                    name=str(name), kind="couple",
+                    instance=str(constraint.instance_name),
+                    node_set=str(constraint.set_nodes_name),
+                    reference_point=str(constraint.rp_name),
+                    enabled=bool(constraint.enabled)))
+            else:
+                raise ValueError(f"Unsupported native constraint '{type(constraint).__name__}'.")
+
+        project_loads = []
+        for name, load in assembly._loads.items():
+            values = tensor_list(load._parameters)
+            if isinstance(load, loads.Pressure):
+                item = LoadDefinition(str(name), "pressure", load.instance_name,
+                                      target=load.surface_set, values=values[:1],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.BodyForce):
+                item = LoadDefinition(str(name), "body_force", load._instance_name,
+                                      target=load._element_name, values=values[:3],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.Concentrate_Force):
+                item = LoadDefinition(str(name), "concentrated_force",
+                                      target=load.rp_name, values=values[:3],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.Moment):
+                item = LoadDefinition(str(name), "moment", target=load.rp_name,
+                                      values=values[:3], enabled=bool(load.enabled))
+            elif isinstance(load, loads.Spring_RP_RP):
+                item = LoadDefinition(str(name), "spring_rp_rp", target=load.rp_name1,
+                                      target2=load.rp_name2, values=values[:2],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.Spring_RP_Point):
+                item = LoadDefinition(str(name), "spring_rp_point", target=load.rp_name,
+                                      values=tensor_list(load.point) + [float(load.k),
+                                          -1.0 if load.rest_length is None else float(load.rest_length)],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.Penalty_DoF):
+                item = LoadDefinition(str(name), "penalty_dof", target=load.obj_name,
+                                      target2=load.obj_type,
+                                      values=[float(load.s), float(load.target), float(load.k)],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.ContactSelf):
+                item = LoadDefinition(str(name), "contact_self", load.instance_name,
+                                      target=load.surface_name,
+                                      values=[float(load._ignore_min_normal),
+                                              float(load._ignore_max_normal),
+                                              float(load._initial_detact_ratio), *values[:6],
+                                              float(load.mesh_size)],
+                                      enabled=bool(load.enabled))
+            elif isinstance(load, loads.Contact):
+                item = LoadDefinition(str(name), "contact", load.instance_name1,
+                                      target=load.surface_name1,
+                                      instance2=load.instance_name2,
+                                      target2=load.surface_name2,
+                                      values=[*values[:6],
+                                              float(load.mesh_size)],
+                                      enabled=bool(load.enabled))
+            else:
+                raise ValueError(f"Unsupported native load '{type(load).__name__}'.")
+            project_loads.append(item)
+
+        solver = controller.solver
+        mesh_size = cad_model.mesh_size
+        if mesh_size is None:
+            mesh_size = next(
+                (history.mesh_size for history in cad_model.parts.values()
+                 if history.mesh_size is not None),
+                None,
+            )
+        if mesh_size is None:
+            raise ValueError("The native model does not define a mesh size.")
+        return cls(
+            label="untitled",
+            parts=part_definitions,
+            instances=instances,
+            reference_points=reference_points,
+            boundaries=boundaries,
+            constraints=project_constraints,
+            loads=project_loads,
+            solver_maximum_iteration=int(solver.maximum_iteration),
+            solver_tolerance=float(solver.tol_error),
+            mesh_size=float(mesh_size),
+        )
 
     @classmethod
     def from_dict(cls, data: dict) -> "CAEProject":
@@ -217,67 +509,51 @@ class CAEProject:
             return [NamedSet(**set_data) for set_data in raw_sets]
 
         part_definitions = []
-        for part_data in data.get("parts", []):
-            geometry_data = part_data.get("geometry", {})
+        for part_data in data["parts"]:
+            geometry_data = part_data["geometry"]
+            source = geometry_data["source"].strip().casefold()
+            if source not in {"cad", "discrete"}:
+                raise ValueError(f"Unknown geometry source '{source}'.")
+            discrete_data = geometry_data["discrete_data"]
+            runtime_part = None
+            if source == "discrete":
+                if discrete_data is None:
+                    raise ValueError(f"Discrete Part '{part_data['name']}' has no native mesh.")
+                runtime_part = Serializable._deserialize(discrete_data)
             geometry = GeometryDefinition(
-                kind=geometry_data.get("kind", "box"),
-                values=geometry_data.get("values", GeometryDefinition().values),
                 operations=[CADOperation(**operation_data)
-                            for operation_data in geometry_data.get("operations", [])],
+                            for operation_data in geometry_data["operations"]],
+                source=source,
+                discrete_data=discrete_data,
+                runtime_part=runtime_part,
             )
-            # Older projects stored one material as Part.young/poisson.
-            # Promote that pair into the new Part-owned material collection.
-            raw_materials = part_data.get("materials")
-            if raw_materials:
-                material_definitions = [MaterialDefinition(**material_data)
-                                        for material_data in raw_materials]
-            else:
-                material_definitions = [MaterialDefinition(
-                    name="Material-1", kind="linear_elastic",
-                    young=float(part_data.get("young", 210000.0)),
-                    poisson=float(part_data.get("poisson", .3)),
-                    element_set="all")]
+            material_definitions = [MaterialDefinition(**material_data)
+                                    for material_data in part_data["materials"]]
             part_definitions.append(PartDefinition(
-                name=part_data.get("name", "Part-1"), geometry=geometry,
-                young=part_data.get("young", 210000.0),
-                poisson=part_data.get("poisson", .3),
+                name=part_data["name"], geometry=geometry,
                 materials=material_definitions,
-                density=float(part_data.get("density", 1.0)),
-                node_sets=load_named_sets(part_data.get("node_sets", [])),
-                element_sets=load_named_sets(part_data.get("element_sets", [])),
-                surface_sets=load_named_sets(part_data.get("surface_sets", [])),
-                exterior_surface=part_data.get("exterior_surface", "extern")))
-        if not part_definitions:
-            LOGGER.warning("CAE definition contains no Parts; creating default Part-1")
+                density=float(part_data["density"]),
+                node_sets=load_named_sets(part_data["node_sets"]),
+                element_sets=load_named_sets(part_data["element_sets"]),
+                surface_sets=load_named_sets(part_data["surface_sets"]),
+                exterior_surface=part_data["exterior_surface"]))
         project = cls(
-            label=data.get("label", "untitled"),
-            parts=part_definitions or [PartDefinition()],
-            instances=[InstanceDefinition(**item) for item in data.get("instances", [])],
+            label=data["label"],
+            parts=part_definitions,
+            instances=[InstanceDefinition(**item) for item in data["instances"]],
             reference_points=[ReferencePointDefinition(**item)
-                             for item in data.get("reference_points", [])],
+                             for item in data["reference_points"]],
             boundaries=[BoundaryDefinition(**item)
-                        for item in data.get("boundaries", [])],
-            loads=[LoadDefinition(**item) for item in data.get("loads", [])],
-            # JSON producers and older UI versions may serialize integral
-            # controls as ``100.0``.  Keep those values numeric but integral
-            # before they reach Python ``range``/TorchScript APIs.
-            solver_maximum_iteration=int(round(float(data.get("solver_maximum_iteration", 100)))),
-            solver_tolerance=float(data.get("solver_tolerance", 1e-5)),
-            mesh_size=float(data.get("mesh_size", 1.5)))
-        if not project.instances:
-            LOGGER.warning("CAE definition contains no Instances; creating default instance")
-            project.instances = [InstanceDefinition(part_name=project.parts[0].name)]
+                        for item in data["boundaries"]],
+            constraints=[ConstraintDefinition(**item)
+                         for item in data["constraints"]],
+            loads=[LoadDefinition(**item) for item in data["loads"]],
+            # Keep integral controls numeric before they reach Python
+            # ``range``/TorchScript APIs.
+            solver_maximum_iteration=int(round(float(data["solver_maximum_iteration"]))),
+            solver_tolerance=float(data["solver_tolerance"]),
+            mesh_size=float(data["mesh_size"]))
         return project
-
-    def save(self, path: str) -> str:
-        output = Path(path)
-        output.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(output)
-
-    @classmethod
-    def load(cls, path: str) -> "CAEProject":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
-
 
 def build_controller(project: CAEProject):
     """Build a solver-ready native model from the UI definition.
@@ -286,49 +562,81 @@ def build_controller(project: CAEProject):
     created here has the same semantics as one authored directly in Python.
     """
     from torchfea import FEAController
-    from torchfea.model import Assembly, Instance, ReferencePoint, loads, boundarys
+    from torchfea.model import Assembly, Instance, ReferencePoint, loads, boundarys, constraints
     from torchfea.model.elements.materials import LinearElastic, NeoHookean, NeoHookeanLnJ
     from torchfea.solver.static import StaticImplicitSolver
-    from .gmsh_cad import create_part
+    from torchfea.cad import CADHistory, CADModel, create_part
 
     _validate_project_references(project)
-    LOGGER.info("controller build start: label=%r parts=%d instances=%d mesh_size=%r (%s)",
-                project.label, len(project.parts), len(project.instances),
-                project.mesh_size, type(project.mesh_size).__name__)
     assembly = Assembly()
+    cad_model = CADModel(mesh_size=project.mesh_size)
     for definition in project.parts:
-        operations = definition.geometry.ensure_operations()
-        LOGGER.info("building Part %s: operations=%d node_sets=%d element_sets=%d surface_sets=%d",
-                    definition.name, len(operations),
-                    len(definition.node_sets), len(definition.element_sets), len(definition.surface_sets))
-        LOGGER.info("Part %s material density=%r", definition.name, definition.density)
-        part = create_part(operations, project.mesh_size)
+        geometry = definition.geometry
+        source = geometry.source.strip().casefold()
+        if source not in {"cad", "discrete"}:
+            raise ValueError(f"Unknown geometry source '{source}'.")
+        operations = list(geometry.operations)
+        if source == "discrete":
+            serialized_part = geometry.discrete_data
+            if serialized_part is not None:
+                part = Serializable._deserialize(serialized_part)
+            else:
+                part = geometry.runtime_part
+            if part is None:
+                raise ValueError(
+                    f"Discrete Part '{definition.name}' has no serialized native mesh.")
+        else:
+            cad_model.set_part(
+                definition.name,
+                CADHistory(operations, mesh_size=project.mesh_size),
+            )
+            part = create_part(operations, project.mesh_size)
         exterior_name = str(definition.exterior_surface).strip()
         if not exterior_name:
             raise ValueError(f"Part '{definition.name}' exterior surface name cannot be empty.")
-        if exterior_name != "extern":
+        if source == "discrete":
+            current_exterior = str(part.exterior_surface)
+            if exterior_name != current_exterior:
+                if exterior_name in part.surfaces:
+                    raise ValueError(
+                        f"Part '{definition.name}' exterior surface name '{exterior_name}' is already in use.")
+                if current_exterior not in part.surfaces:
+                    raise ValueError(
+                        f"Part '{definition.name}' exterior surface '{current_exterior}' is missing.")
+                part.surfaces[exterior_name] = part.surfaces[current_exterior]
+                del part.surfaces._surface_dict[current_exterior]
+        elif exterior_name != "extern":
             if exterior_name in part.surfaces:
                 raise ValueError(
                     f"Part '{definition.name}' exterior surface name '{exterior_name}' is already in use.")
             part.surfaces[exterior_name] = part.surfaces["extern"]
             del part.surfaces._surface_dict["extern"]
         part.exterior_surface = exterior_name
-        LOGGER.debug("Part %s exterior surface=%s (all boundary faces)", definition.name, exterior_name)
-        LOGGER.debug("Part %s meshed: nodes=%d element_blocks=%s", definition.name,
-                     len(part.nodes), {name: len(element._elems) for name, element in part.elems.items()})
         density = torch.full(
             (1,), float(definition.density), dtype=torch.get_default_dtype(),
             device=part.nodes.device)
         for element in part.elems.values():
             element.density = density.expand(len(element._elems)).clone()
-        LOGGER.debug("Part %s element density assigned: %g", definition.name, float(definition.density))
 
+        if source == "cad":
+            gmsh_vertex_nodes = part._gmsh_vertex_nodes
+            gmsh_surface_nodes = part._gmsh_surface_nodes
+            gmsh_surface_sets = part._gmsh_surface_sets
+            gmsh_volume_elements = part._gmsh_volume_elements
+        else:
+            gmsh_vertex_nodes = {}
+            gmsh_surface_nodes = {}
+            gmsh_surface_sets = {}
+            gmsh_volume_elements = {}
+        element_data = next(iter(part.elems.values()), None)
+        if element_data is None:
+            raise ValueError(f"Part '{definition.name}' has no element blocks.")
+        element_count = len(element_data._elems)
         for node_set in definition.node_sets:
-            LOGGER.debug("resolving node set %s selection=%r", node_set.name, node_set.selection)
             if node_set.selection.startswith("gmsh:vertex:"):
                 tag = int(node_set.selection.rsplit(":", 1)[1])
                 try:
-                    selected_node_indices = part._gmsh_vertex_nodes[tag]
+                    selected_node_indices = gmsh_vertex_nodes[tag]
                 except KeyError as exc:
                     raise ValueError(
                         f"Node set '{node_set.name}' references missing Gmsh vertex tag {tag} "
@@ -336,7 +644,7 @@ def build_controller(project: CAEProject):
             elif node_set.selection.startswith("gmsh:surface:"):
                 tag = int(node_set.selection.rsplit(":", 1)[1])
                 try:
-                    selected_node_indices = part._gmsh_surface_nodes[tag]
+                    selected_node_indices = gmsh_surface_nodes[tag]
                 except KeyError as exc:
                     raise ValueError(
                         f"Node set '{node_set.name}' references missing Gmsh surface tag {tag} "
@@ -348,7 +656,7 @@ def build_controller(project: CAEProject):
                     else parse_indices(node_set.selection))
             if node_set.name in auto_node_set_names(definition):
                 raise ValueError(f"Node set name '{node_set.name}' on Part '{definition.name}' is reserved.")
-            if node_set.name in {f"gmsh_nodes_{tag}" for tag in part._gmsh_surface_nodes}:
+            if node_set.name in {f"gmsh_nodes_{tag}" for tag in gmsh_surface_nodes}:
                 raise ValueError(f"Node set name '{node_set.name}' on Part '{definition.name}' is reserved.")
             selected_node_indices = np.asarray(selected_node_indices, dtype=int).ravel()
             if (not len(selected_node_indices)
@@ -358,18 +666,16 @@ def build_controller(project: CAEProject):
                     f"Node set '{node_set.name}' on Part '{definition.name}' contains no valid node indices.")
             part.add_node_set(node_set.name, selected_node_indices)
         for element_set in definition.element_sets:
-            LOGGER.debug("resolving element set %s selection=%r", element_set.name, element_set.selection)
             if element_set.selection.startswith("gmsh:volume:"):
                 tag = int(element_set.selection.rsplit(":", 1)[1])
                 try:
-                    selected_element_indices = part._gmsh_volume_elements[tag]
+                    selected_element_indices = gmsh_volume_elements[tag]
                 except KeyError as exc:
                     raise ValueError(
                         f"Element set '{element_set.name}' references missing Gmsh volume tag {tag} "
                         f"on Part '{definition.name}'.") from exc
             else:
                 selected_element_indices = parse_indices(element_set.selection)
-            element_count = len(part.elems["C3D4"]._elems)
             selected_element_indices = np.asarray(selected_element_indices, dtype=int).ravel()
             if (not len(selected_element_indices)
                     or np.any(selected_element_indices < 0)
@@ -380,26 +686,25 @@ def build_controller(project: CAEProject):
                 raise ValueError(f"Element set name 'all' on Part '{definition.name}' is reserved.")
             part.add_element_set(element_set.name, selected_element_indices)
         for surface_set in definition.surface_sets:
-            LOGGER.debug("resolving surface set %s selection=%r", surface_set.name, surface_set.selection)
             if surface_set.selection.startswith("gmsh:surface:"):
                 tag = int(surface_set.selection.rsplit(":", 1)[1])
                 try:
-                    selected_surface_faces = part._gmsh_surface_sets[tag]
+                    selected_surface_faces = gmsh_surface_sets[tag]
                 except KeyError as exc:
                     raise ValueError(
                         f"Surface set '{surface_set.name}' references missing Gmsh surface tag {tag} "
                         f"on Part '{definition.name}'.") from exc
             else:
                 selected_surface_faces = parse_faces(surface_set.selection)
-            if surface_set.name in {f"gmsh_surface_{tag}" for tag in part._gmsh_surface_sets}:
+            if surface_set.name in {f"gmsh_surface_{tag}" for tag in gmsh_surface_sets}:
                 raise ValueError(f"Surface set name '{surface_set.name}' on Part '{definition.name}' is reserved.")
             if not selected_surface_faces:
                 raise ValueError(f"Surface set '{surface_set.name}' on Part '{definition.name}' is empty.")
             for element_ids, side in selected_surface_faces:
                 element_ids = np.asarray(element_ids, dtype=int).ravel()
                 if (not len(element_ids) or np.any(element_ids < 0)
-                        or np.any(element_ids >= len(part.elems["C3D4"]._elems))
-                        or int(side) not in range(4)):
+                        or np.any(element_ids >= element_count)
+                        or int(side) not in element_data.surfaceid_map):
                     raise ValueError(
                         f"Surface set '{surface_set.name}' on Part '{definition.name}' contains an invalid element face.")
             part.add_surface_set(surface_set.name, selected_surface_faces)
@@ -408,7 +713,6 @@ def build_controller(project: CAEProject):
             # deriving nodes here guarantees that the companion remains in
             # sync with the exact surface selection used by pressure loads.
             face_nodes = []
-            element_data = part.elems["C3D4"]
             for element_ids, side in selected_surface_faces:
                 indices = np.asarray(element_ids, dtype=int).ravel()
                 local_nodes = element_data.surfaceid_map[int(side)]
@@ -419,21 +723,15 @@ def build_controller(project: CAEProject):
                 raise ValueError(
                     f"Surface set '{surface_set.name}' generated node set '{generated_name}' already exists.")
             part.add_node_set(generated_name, np.unique(np.concatenate(face_nodes)))
-            LOGGER.debug("generated surface node set %s: nodes=%d", generated_name,
-                         len(part.set_nodes[generated_name]))
-        LOGGER.info("Part %s generated analysis sets: node_sets=%s element_sets=%s",
-                    definition.name, sorted(part.set_nodes), sorted(part.set_elements))
-        material_definitions = definition.materials or [MaterialDefinition(
-            name="Material-1", kind="linear_elastic", young=definition.young,
-            poisson=definition.poisson, element_set="all")]
-        element_count = len(part.elems["C3D4"]._elems)
+        material_definitions = definition.materials
         assigned = np.full(element_count, -1, dtype=int)
         for material_index, material_definition in enumerate(material_definitions):
             target_set = str(material_definition.element_set).strip()
-            material_element_indices = np.asarray(
-                part.set_elements.get(target_set, []), dtype=int).ravel()
             if target_set == "all":
                 material_element_indices = np.arange(element_count, dtype=int)
+            else:
+                material_element_indices = np.asarray(
+                    part.set_elements[target_set], dtype=int).ravel()
             if (not len(material_element_indices)
                     or np.any(material_element_indices < 0)
                     or np.any(material_element_indices >= element_count)):
@@ -466,70 +764,89 @@ def build_controller(project: CAEProject):
                     material, material_definition.name,
                     element_indices=material_element_indices)
             assigned[material_element_indices] = material_index
-            LOGGER.debug("assigned material %s kind=%s to Part %s element_set=%s elements=%d",
-                         material_definition.name, kind, definition.name,
-                         target_set, len(material_element_indices))
         if np.any(assigned < 0):
             missing = np.flatnonzero(assigned < 0).tolist()
             raise ValueError(
                 f"Part '{definition.name}' has no material assigned to element indices {missing}.")
-        LOGGER.info("Part %s materials=%s", definition.name,
-                    [item.name for item in material_definitions])
         assembly.add_part(part, definition.name)
 
     for definition in project.instances:
         part_definition = next(item for item in project.parts if item.name == definition.part_name)
         exterior = str(part_definition.exterior_surface).strip()
-        LOGGER.debug("adding instance %s part=%s translation=%s rotation=%s",
-                     definition.name, definition.part_name, definition.translation,
-                     definition.rotation)
         part = assembly.get_part(definition.part_name)
         if exterior not in part.surfaces:
             raise ValueError(
                 f"Part '{definition.part_name}' exterior surface '{exterior}' is missing "
                 f"on Part '{definition.part_name}'.")
-        assembly.add_instance(Instance(
-            definition.part_name, definition.translation, definition.rotation), definition.name)
+        instance = Instance(definition.part_name, definition.translation, definition.rotation)
+        instance.enabled = bool(definition.enabled)
+        assembly.add_instance(instance, definition.name)
     for definition in project.reference_points:
-        LOGGER.debug("adding reference point %s point=%s", definition.name, definition.point)
         assembly.add_reference_point(ReferencePoint(definition.point), definition.name)
     for definition in project.boundaries:
-        LOGGER.debug("adding boundary %s instance=%s node_set=%s dofs=%s", definition.name,
-                     definition.instance, definition.node_set, definition.dofs)
-        assembly.add_boundary(boundarys.Boundary_Condition(
-            definition.instance, definition.node_set, definition.dofs), definition.name)
+        if definition.kind == "reference_point":
+            boundary = boundarys.Boundary_Condition_RP(
+                definition.reference_point, definition.dofs)
+        elif definition.kind == "nodes":
+            boundary = boundarys.Boundary_Condition(
+                definition.instance, definition.node_set, definition.dofs)
+        else:
+            raise ValueError(f"Unknown boundary type: {definition.kind}")
+        boundary.enabled = bool(definition.enabled)
+        assembly.add_boundary(boundary, definition.name)
+    for definition in project.constraints:
+        if definition.kind != "couple":
+            raise ValueError(f"Unknown constraint type: {definition.kind}")
+        constraint = constraints.Couple(
+            definition.instance, definition.node_set, definition.reference_point)
+        constraint.enabled = bool(definition.enabled)
+        assembly.add_constraint(constraint, definition.name)
     for definition in project.loads:
-        LOGGER.debug("adding load %s kind=%s instance=%s target=%s values=%s", definition.name,
-                     definition.kind, definition.instance, definition.target, definition.values)
+        values = [float(value) for value in definition.values]
         if definition.kind == "pressure":
-            load = loads.Pressure(definition.instance, definition.target, definition.values[0])
+            load = loads.Pressure(definition.instance, definition.target, values[0])
         elif definition.kind == "body_force":
-            load = loads.BodyForce(definition.instance, definition.target, definition.values[:3])
+            load = loads.BodyForce(definition.instance, definition.target, values[:3])
         elif definition.kind == "concentrated_force":
-            load = loads.Concentrate_Force(definition.target, definition.values[:3])
+            load = loads.Concentrate_Force(definition.target, values[:3])
+        elif definition.kind == "moment":
+            load = loads.Moment(definition.target, values[:3])
+        elif definition.kind == "spring_rp_rp":
+            load = loads.Spring_RP_RP(
+                definition.target, definition.target2, values[0],
+                None if values[1] < 0 else values[1])
+        elif definition.kind == "spring_rp_point":
+            load = loads.Spring_RP_Point(
+                definition.target, values[:3], values[3],
+                None if values[4] < 0 else values[4])
+        elif definition.kind == "penalty_dof":
+            load = loads.Penalty_DoF(
+                definition.target, int(round(values[0])), values[1], values[2],
+                definition.target2)
+        elif definition.kind == "contact_self":
+            load = loads.ContactSelf(definition.instance, definition.target, *values)
+        elif definition.kind == "contact":
+            load = loads.Contact(
+                definition.instance, definition.instance2, definition.target,
+                definition.target2, *values)
         else:
             raise ValueError(f"Unknown load type: {definition.kind}")
+        load.enabled = bool(definition.enabled)
         assembly.add_load(load, definition.name)
 
     controller = FEAController()
     controller.assembly = assembly
+    controller.cad = cad_model
     maximum_iteration = int(round(float(project.solver_maximum_iteration)))
     tolerance = float(project.solver_tolerance)
-    LOGGER.debug("solver settings normalized: maximum_iteration=%d tolerance=%r", maximum_iteration, tolerance)
     controller.solver = StaticImplicitSolver(maximum_iteration, tolerance)
-    LOGGER.info("controller build complete: parts=%d instances=%d loads=%d boundaries=%d",
-                len(assembly._parts), len(assembly._instances), len(assembly._loads), len(assembly._boundarys))
     return controller
 
 
 def _validate_project_references(project: CAEProject) -> None:
     """Reject references that the native Assembly API would otherwise defer.
 
-    Assembly's ``add_*`` methods intentionally accept lightweight objects and
-    overwrite duplicate names.  That is useful for low-level scripting but is
-    a dangerous fallback for a UI definition: a typo can survive model build
-    and only fail later during solver initialization.  Validate the complete
-    project graph at the UI-to-model boundary instead.
+    Validate the complete project graph before it reaches Assembly.
     """
     if not project.parts:
         raise ValueError("CAE project needs at least one Part.")
@@ -539,7 +856,7 @@ def _validate_project_references(project: CAEProject) -> None:
     def unique_names(items, kind: str) -> dict[str, object]:
         result: dict[str, object] = {}
         for item in items:
-            name = str(getattr(item, "name", "")).strip()
+            name = str(item.name).strip()
             if not name:
                 raise ValueError(f"{kind} name cannot be empty.")
             if name in result:
@@ -551,10 +868,21 @@ def _validate_project_references(project: CAEProject) -> None:
     instances = unique_names(project.instances, "Instance")
     reference_points = unique_names(project.reference_points, "Reference point")
     unique_names(project.boundaries, "Boundary")
+    unique_names(project.constraints, "Constraint")
     unique_names(project.loads, "Load")
     for part in project.parts:
+        geometry_source = part.geometry.source.strip().casefold()
+        if geometry_source not in {"cad", "discrete"}:
+            raise ValueError(
+                f"Part '{part.name}' has unknown geometry source '{part.geometry.source}'.")
+        if geometry_source == "discrete" and not (
+                part.geometry.discrete_data is not None
+                or part.geometry.runtime_part is not None):
+            raise ValueError(f"Discrete Part '{part.name}' has no native mesh.")
         if not np.isfinite(float(part.density)) or float(part.density) <= 0:
             raise ValueError(f"Material density on Part '{part.name}' must be positive and finite.")
+        if not part.materials:
+            raise ValueError(f"Part '{part.name}' needs at least one material.")
         unique_names(part.materials, f"material on Part '{part.name}'")
         unique_names(part.node_sets, f"node set on Part '{part.name}'")
         unique_names(part.element_sets, f"element set on Part '{part.name}'")
@@ -618,51 +946,132 @@ def _validate_project_references(project: CAEProject) -> None:
         raise ValueError("Global mesh size must be a positive finite number.")
 
     for boundary in project.boundaries:
-        instance = instances.get(boundary.instance)
+        if boundary.kind == "reference_point":
+            if boundary.reference_point not in reference_points:
+                raise ValueError(
+                    f"Boundary '{boundary.name}' references missing reference point "
+                    f"'{boundary.reference_point}'.")
+            allowed_dofs = (0, 1, 2, 3, 4, 5)
+        elif boundary.kind == "nodes":
+            instance = instances.get(boundary.instance)
+            if instance is None:
+                raise ValueError(
+                    f"Boundary '{boundary.name}' references missing Instance '{boundary.instance}'.")
+            part = parts[instance.part_name]
+            node_set_names = {item.name for item in part.node_sets} | auto_node_set_names(part)
+            if boundary.node_set not in node_set_names:
+                raise ValueError(
+                    f"Boundary '{boundary.name}' references missing node set '{boundary.node_set}' "
+                    f"on Part '{part.name}'.")
+            allowed_dofs = (0, 1, 2)
+        else:
+            raise ValueError(f"Boundary '{boundary.name}' has unknown type '{boundary.kind}'.")
+        if not boundary.dofs or any(int(dof) not in allowed_dofs for dof in boundary.dofs):
+            raise ValueError(
+                f"Boundary '{boundary.name}' DOFs must be a non-empty subset of {allowed_dofs}.")
+
+    for constraint in project.constraints:
+        if constraint.kind != "couple":
+            raise ValueError(f"Constraint '{constraint.name}' has unknown type '{constraint.kind}'.")
+        instance = instances.get(constraint.instance)
         if instance is None:
             raise ValueError(
-                f"Boundary '{boundary.name}' references missing Instance '{boundary.instance}'.")
+                f"Constraint '{constraint.name}' references missing Instance '{constraint.instance}'.")
         part = parts[instance.part_name]
         node_set_names = {item.name for item in part.node_sets} | auto_node_set_names(part)
-        if boundary.node_set not in node_set_names:
+        if constraint.node_set not in node_set_names:
             raise ValueError(
-                f"Boundary '{boundary.name}' references missing node set '{boundary.node_set}' "
+                f"Constraint '{constraint.name}' references missing node set '{constraint.node_set}' "
                 f"on Part '{part.name}'.")
-        if not boundary.dofs or any(int(dof) not in (0, 1, 2) for dof in boundary.dofs):
-            raise ValueError(f"Boundary '{boundary.name}' DOFs must be a non-empty subset of 0, 1, 2.")
+        if constraint.reference_point not in reference_points:
+            raise ValueError(
+                f"Constraint '{constraint.name}' references missing reference point "
+                f"'{constraint.reference_point}'.")
 
     for load in project.loads:
-        if load.instance not in instances and load.kind != "concentrated_force":
+        values = [float(value) for value in load.values]
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"Load '{load.name}' contains non-finite parameters.")
+        required_values = {
+            "pressure": 1,
+            "body_force": 3,
+            "concentrated_force": 3,
+            "moment": 3,
+            "spring_rp_rp": 2,
+            "spring_rp_point": 5,
+            "penalty_dof": 3,
+            "contact_self": 10,
+            "contact": 7,
+        }
+        if load.kind in required_values and len(values) != required_values[load.kind]:
             raise ValueError(
-                f"Load '{load.name}' references missing Instance '{load.instance}'.")
+                f"Load '{load.name}' needs {required_values[load.kind]} values.")
+
+        def require_instance(instance_name: str):
+            instance = instances.get(instance_name)
+            if instance is None:
+                raise ValueError(
+                    f"Load '{load.name}' references missing Instance '{instance_name}'.")
+            return instance, parts[instance.part_name]
+
+        def require_reference_point(point_name: str):
+            if point_name not in reference_points:
+                raise ValueError(
+                    f"Load '{load.name}' references missing reference point '{point_name}'.")
+
         if load.kind == "pressure":
-            if len(load.values) < 1:
-                raise ValueError(f"Pressure load '{load.name}' needs one scalar value.")
-            instance = instances[load.instance]
-            part = parts[instance.part_name]
-            surface_names = {str(part.exterior_surface).strip(), *(item.name for item in part.surface_sets)}
+            instance, part = require_instance(load.instance)
+            surface_names = {str(part.exterior_surface).strip(),
+                             *(item.name for item in part.surface_sets)}
             if load.target not in surface_names:
                 raise ValueError(
                     f"Pressure load '{load.name}' references missing surface set '{load.target}' "
                     f"on Part '{part.name}'.")
         elif load.kind == "body_force":
-            if len(load.values) < 3:
-                raise ValueError(f"Body force '{load.name}' needs three components.")
-            instance = instances[load.instance]
-            part = parts[instance.part_name]
-            # Native Gmsh import currently creates one C3D4 block.  Keep the
-            # check against the actual element block names so this remains
-            # correct if additional element types are introduced later.
-            element_names = {"C3D4"}
-            if load.target not in element_names:
+            _instance, part = require_instance(load.instance)
+            if load.target != "C3D4":
                 raise ValueError(
                     f"Body force '{load.name}' references unknown element block '{load.target}' "
                     f"on Part '{part.name}'.")
-        elif load.kind == "concentrated_force":
-            if len(load.values) < 3:
-                raise ValueError(f"Concentrated force '{load.name}' needs three components.")
-            if load.target not in reference_points:
-                raise ValueError(
-                    f"Concentrated force '{load.name}' references missing reference point '{load.target}'.")
+        elif load.kind in {"concentrated_force", "moment"}:
+            require_reference_point(load.target)
+        elif load.kind == "spring_rp_rp":
+            require_reference_point(load.target)
+            require_reference_point(load.target2)
+            if values[0] <= 0:
+                raise ValueError(f"Spring '{load.name}' needs a positive stiffness.")
+        elif load.kind == "spring_rp_point":
+            require_reference_point(load.target)
+            if values[3] <= 0:
+                raise ValueError(f"Spring '{load.name}' needs point coordinates and positive stiffness.")
+        elif load.kind == "penalty_dof":
+            object_maps = {
+                "instance": instances,
+                "rp": reference_points,
+                "load": {item.name: item for item in project.loads},
+                "constraint": {item.name: item for item in project.constraints},
+                "boundary": {item.name: item for item in project.boundaries},
+            }
+            object_type = str(load.target2 or "auto")
+            if object_type == "auto":
+                if not any(load.target in mapping for mapping in object_maps.values()):
+                    raise ValueError(f"Penalty load '{load.name}' references unknown object '{load.target}'.")
+            elif object_type not in object_maps or load.target not in object_maps[object_type]:
+                raise ValueError(f"Penalty load '{load.name}' references unknown {object_type} '{load.target}'.")
+            if int(round(values[0])) < 0 or values[2] <= 0:
+                raise ValueError(f"Penalty load '{load.name}' needs s, target and positive stiffness.")
+        elif load.kind == "contact_self":
+            _instance, part = require_instance(load.instance)
+            surface_names = {str(part.exterior_surface).strip(),
+                             *(item.name for item in part.surface_sets)}
+            if load.target not in surface_names:
+                raise ValueError(f"Contact '{load.name}' references missing surface '{load.target}'.")
+        elif load.kind == "contact":
+            _instance1, part1 = require_instance(load.instance)
+            _instance2, part2 = require_instance(load.instance2)
+            surfaces1 = {str(part1.exterior_surface).strip(), *(item.name for item in part1.surface_sets)}
+            surfaces2 = {str(part2.exterior_surface).strip(), *(item.name for item in part2.surface_sets)}
+            if load.target not in surfaces1 or load.target2 not in surfaces2:
+                raise ValueError(f"Contact '{load.name}' references a missing surface.")
         else:
             raise ValueError(f"Unknown load type: {load.kind}")

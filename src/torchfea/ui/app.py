@@ -5,29 +5,43 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtWidgets import QApplication
-
 _DARK_QSS = """
-QMainWindow, QDialog, QWidget { background:#12161d; color:#e4e8ef; }
-QMenuBar, QToolBar, QMenu, QStatusBar { background:#191f29; color:#d9e0ea; }
-QTreeWidget, QTableWidget, QPlainTextEdit, QTextEdit { background:#1c2330; border:1px solid #334055; }
-QHeaderView::section { background:#283346; border:0; padding:5px; }
-QTabWidget::pane { border:1px solid #334055; }
-QTabBar::tab { background:#1c2330; padding:7px 12px; color:#aab5c5; }
-QTabBar::tab:selected { background:#1559a6; color:white; }
-QPushButton { background:#1559a6; border:0; border-radius:3px; padding:6px 12px; color:white; }
-QPushButton:hover { background:#2472c4; }
-QPushButton:disabled { background:#3a4351; color:#8993a2; }
-QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background:#252e3d; border:1px solid #3b4960; padding:4px; }
-QGroupBox { border:1px solid #334055; margin-top:9px; padding-top:7px; }
-QGroupBox::title { left:8px; padding:0 4px; color:#86b8ee; }
-QSplitter::handle { background:#334055; }
+QMainWindow, QDialog, QWidget { background-color: #121212; color: #e0e0e0; }
+QMenuBar, QToolBar, QMenu { background-color: #1a1a1a; color: #e0e0e0; }
+QStatusBar { background-color: #1a1a1a; color: #aaa; }
+QTreeWidget, QTreeView, QTableWidget, QListWidget, QPlainTextEdit, QTextEdit {
+    background-color: #1c1f26; color: #e0e0e0; border: 1px solid #2b2f38; }
+QHeaderView::section { background-color: #262a33; color: #e0e0e0;
+    border: 1px solid #2b2f38; padding: 4px; }
+QTabWidget::pane { border: 1px solid #2b2f38; }
+QTabBar::tab { background: #1a1a1a; color: #aaa; padding: 6px 12px;
+    border-top-left-radius: 4px; border-top-right-radius: 4px; }
+QTabBar::tab:selected { background: #0d47a1; color: #fff; }
+QPushButton { background-color: #0d47a1; color: #fff; border: none;
+    padding: 5px 14px; border-radius: 3px; }
+QPushButton:hover { background-color: #1565c0; }
+QPushButton:disabled { background-color: #333; color: #777; }
+QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #262a33; color: #e0e0e0;
+    border: 1px solid #3a3f4a; padding: 3px; }
+QCheckBox { color: #e0e0e0; }
+QScrollBar:vertical { background: #1a1a1a; width: 10px; }
+QScrollBar::handle:vertical { background: #3a3f4a; border-radius: 5px; }
+QSplitter::handle { background: #2b2f38; }
 """
 
 
-def create_application(argv: list[str] | None = None):
+def configure_environment() -> None:
+    """Set the same Qt/VTK process defaults as the companion MorphOpt UI."""
     if sys.platform.startswith("linux"):
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    os.environ.setdefault("PYVISTA_QT_BINDING", "pyside6")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
+
+
+def create_application(argv: list[str] | None = None):
+    configure_environment()
+    from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance()
     if app is None:
         app = QApplication(argv or sys.argv)

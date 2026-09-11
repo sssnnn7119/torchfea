@@ -3,40 +3,50 @@
 from __future__ import annotations
 
 import copy
+import os
 import numpy as np
 from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QInputDialog, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QSpinBox,
-    QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSlider, QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QMenu,
 )
 
 from .i18n import T
 from .model import (
-    BoundaryDefinition, CAEProject, InstanceDefinition, LoadDefinition,
-    MaterialDefinition, NamedSet, PartDefinition, ReferencePointDefinition, build_controller,
+    BoundaryDefinition, CAEProject, ConstraintDefinition, GeometryDefinition,
+    InstanceDefinition, LoadDefinition, MaterialDefinition, NamedSet, PartDefinition,
+    ReferencePointDefinition, build_controller,
     auto_node_set_names, parse_indices, surface_node_set_name,
 )
-from .model import CADOperation
-from .gmsh_cad import create_part, preview_brep, primitive_defaults, transform_defaults
-from .logging_utils import LOGGER, log_path
+from torchfea.cad import (
+    CADHistory, CADOperation, create_part, preview_brep, preview_discrete_part,
+    primitive_defaults, transform_defaults,
+)
 from .postprocess import VTKMeshViewer
 
 
 class Workbench(QWidget):
     """Abaqus-style model tree backed by :class:`CAEProject`."""
 
-    changed = Signal()
-    runRequested = Signal(object)
+    #: Hand the current definition to the postprocess page.  Entering that
+    #: page does not start a solve; the solve is an explicit second action
+    #: there, matching the definition/observer flow used by MorphOpt.
+    submitRequested = Signal(object)
     notify = Signal(str)
+    newRequested = Signal()
+    openRequested = Signal()
+    saveRequested = Signal()
+    exportInpRequested = Signal()
+    exportPartStepRequested = Signal(int)
+    importPartStepRequested = Signal()
 
     def __init__(self, project: CAEProject | None = None, parent=None):
         super().__init__(parent)
         self.project = project or CAEProject()
-        self._preview_controller = None
         self._mesh_parts: dict[str, object] = {}
         self._assembly_mesh_controller = None
         self._brep_part_records: dict[str, list[dict]] = {}
@@ -45,6 +55,14 @@ class Workbench(QWidget):
         self._view_mode = "assembly_geometry"
         self._pick_target: tuple[int, str, int] | None = None
         self._active_tree_data = ("project", None)
+        # The editor is deliberately modeless: users can type several fields
+        # before pressing Apply.  Keep that state separate from the project
+        # history so changing the tree cannot silently discard those edits.
+        self._editor_dirty = False
+        # Monotonic UI-definition revision.  MainWindow uses this to know
+        # whether a controller loaded from disk is still the exact model
+        # represented by the editor, without hashing on every tree click.
+        self._definition_revision = 0
         self._history: list[dict] = [self.project.to_dict()]
         self._history_index = 0
         # Mesh generation may be triggered by several related field updates.
@@ -55,6 +73,8 @@ class Workbench(QWidget):
         self._preview_timer.setInterval(350)
         self._preview_timer.timeout.connect(self._refresh_preview_automatically)
         self._build_ui()
+        self._seed_discrete_mesh_cache()
+        self._update_view_tabs()
         self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
         self._redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
         self._undo_shortcut.activated.connect(self.undo)
@@ -66,23 +86,25 @@ class Workbench(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         actions = QHBoxLayout()
-        self._buttons: list[QPushButton] = []
-        for text, slot in [
-            ("+ " + T("零件", "Part"), self.add_part),
-            ("+ " + T("实例", "Instance"), self.add_instance),
-            ("+ " + T("参考点", "Reference Point"), self.add_reference_point),
-            ("+ " + T("边界", "Boundary"), self.add_boundary),
-            ("+ " + T("载荷", "Load"), self.add_load),
+        actions.setSpacing(6)
+        # Keep the workbench header focused on document-level actions.  Model
+        # creation is intentionally available from the tree context menu,
+        # matching the definition workbench in MorphOpt.
+        for text, tooltip, signal in [
+            (T("新建", "New"), T("新建 CAE 模型", "Create a new CAE model"), self.newRequested),
+            (T("打开", "Open"), T("打开模型", "Open model"), self.openRequested),
+            (T("保存", "Save"), T("保存当前模型", "Save the current model"), self.saveRequested),
+            (T("导出 INP", "Export INP"),
+             T("导出 Abaqus 输入文件", "Export an Abaqus input file"), self.exportInpRequested),
         ]:
             button = QPushButton(text)
-            button.clicked.connect(slot)
+            button.setToolTip(tooltip)
+            button.setStyleSheet("padding:4px 14px;")
+            button.clicked.connect(lambda _checked=False, action_signal=signal: action_signal.emit())
             actions.addWidget(button)
-            self._buttons.append(button)
         undo = QPushButton("↶ " + T("撤回", "Undo")); undo.clicked.connect(self.undo)
         redo = QPushButton("↷ " + T("重做", "Redo")); redo.clicked.connect(self.redo)
         actions.addWidget(undo); actions.addWidget(redo)
-        merge = QPushButton(T("Part 并集合并", "Union Parts")); merge.clicked.connect(self.merge_parts)
-        actions.addWidget(merge)
         actions.addStretch(1)
         self.mesh_size = self._number(self.project.mesh_size, 1e-9, 1e12)
         self.mesh_size.setFixedWidth(90)
@@ -110,8 +132,10 @@ class Workbench(QWidget):
         tree_layout.addLayout(filter_row)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabel(T("CAE 模型", "CAE model"))
-        self.tree.setMinimumWidth(220)
+        self.tree.setMinimumWidth(230)
         self.tree.itemSelectionChanged.connect(self._selected)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._open_tree_menu)
         tree_layout.addWidget(self.tree, 1)
         split.addWidget(tree_panel)
 
@@ -154,17 +178,40 @@ class Workbench(QWidget):
         edges = QCheckBox(T("边线", "Edges")); edges.setChecked(True)
         view_actions.addWidget(wireframe); view_actions.addWidget(edges); view_actions.addStretch(1)
         preview_layout.addLayout(view_actions)
+        section_actions = QHBoxLayout()
+        section_actions.addWidget(QLabel(T("剖视", "Section")))
+        self.section_enabled = QCheckBox(T("启用", "On"))
+        self.section_axis = QComboBox()
+        self.section_axis.addItem("X", "x")
+        self.section_axis.addItem("Y", "y")
+        self.section_axis.addItem("Z", "z")
+        self.section_axis.setCurrentIndex(2)
+        self.section_position = QSlider(Qt.Orientation.Horizontal)
+        self.section_position.setRange(0, 100)
+        self.section_position.setValue(50)
+        self.section_position.setFixedWidth(130)
+        self.section_position.setToolTip(T(
+            "拖动剖切面位置", "Move the section plane"))
+        section_actions.addWidget(self.section_enabled)
+        section_actions.addWidget(self.section_axis)
+        section_actions.addWidget(self.section_position)
+        section_actions.addStretch(1)
+        preview_layout.addLayout(section_actions)
         self.preview = VTKMeshViewer()
         fit.clicked.connect(self.preview.reset_camera)
         wireframe.toggled.connect(self.preview.set_wireframe)
         edges.toggled.connect(self.preview.set_edge_visibility)
+        self.section_enabled.toggled.connect(self._update_section_view)
+        self.section_axis.currentIndexChanged.connect(self._update_section_view)
+        self.section_position.valueChanged.connect(self._update_section_view)
         self.preview.entityPicked.connect(self._picked_entity)
         preview_layout.addWidget(self.preview, 1)
         # Start with the complete assembly BREP, matching the conventional
         # CAE landing view; the other three products remain one click away.
         self.view_tabs.setCurrentIndex(2)
         split.addWidget(preview_panel)
-        split.setSizes([240, 460, 620])
+        split.setSizes([230, 560, 460])
+        split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 1)
         outer.addWidget(split, 1)
@@ -172,18 +219,30 @@ class Workbench(QWidget):
         foot = QHBoxLayout()
         self.message = QLabel(T("就绪", "Ready"))
         self.message.setStyleSheet("color:#9eabba")
-        self.message.setToolTip(T(f"详细日志：{log_path()}", f"Detailed log: {log_path()}"))
         foot.addWidget(self.message, 1)
-        log_button = QPushButton(T("日志", "Log"))
-        log_button.setToolTip(T("显示详细日志文件位置", "Show detailed log file location"))
-        log_button.clicked.connect(self._show_log_path)
-        foot.addWidget(log_button)
-        self.submit = QPushButton("▶ " + T("提交计算 / 后处理", "Submit for solve / postprocess"))
+        self.submit = QPushButton("▶ " + T("进入后处理", "Open postprocess"))
+        self.submit.setToolTip(T(
+            "提交当前模型并进入后处理",
+            "Submit the current model and open postprocess"))
         self.submit.setStyleSheet("background:#00796b; font-weight:600; padding:7px 18px")
-        self.submit.clicked.connect(lambda: self.runRequested.emit(self.project))
+        self.submit.clicked.connect(self._submit_project)
         foot.addWidget(self.submit)
         outer.addLayout(foot)
         self._update_view_tabs()
+
+    def _update_section_view(self, *_args) -> None:
+        """Apply the shared clipping-plane controls to the CAD/mesh view."""
+        self.preview.set_section(
+            self.section_enabled.isChecked(),
+            str(self.section_axis.currentData() or "z"),
+            self.section_position.value() / 100.0,
+        )
+
+    def _submit_project(self) -> None:
+        """Submit only an applied definition to the postprocess page."""
+        if self._editor_dirty and not self._confirm_submit_with_pending_edit():
+            return
+        self.submitRequested.emit(self.project)
 
     def set_project(self, project: CAEProject) -> None:
         """Replace the current definition and reset its reversible history."""
@@ -191,10 +250,18 @@ class Workbench(QWidget):
         self._history = [project.to_dict()]
         self._history_index = 0
         self._active_tree_data = ("project", None)
+        self._editor_dirty = False
+        self._definition_revision = 0
         self._invalidate_mesh_cache()
+        self._seed_discrete_mesh_cache()
         self.mesh_size.setValue(project.mesh_size)
         self.reload()
         self._preview_timer.start()
+
+    def close_cleanup(self) -> None:
+        """Stop deferred preview work and release the embedded VTK view."""
+        self._preview_timer.stop()
+        self.preview.shutdown()
 
     # ---------------------------------------------------------- tree model
     def reload(self, select_data=None) -> None:
@@ -209,11 +276,14 @@ class Workbench(QWidget):
         parts.setExpanded(True)
         for index, part in enumerate(self.project.parts):
             item = self._node(part.name, ("part", index), parts)
-            geometry = self._node(T("几何 / 网格", "Geometry / mesh"), ("geometry", index), item)
+            discrete = part.geometry.source.casefold() == "discrete"
+            geometry_label = T("离散几何 / 网格", "Discrete geometry / mesh") if discrete \
+                else T("几何 / 网格", "Geometry / mesh")
+            geometry = self._node(geometry_label, ("geometry", index), item)
             # Keep the OCC history directly under the geometry node.  A
             # second history container added no behavior and only made every
             # feature take one extra click to reach.
-            for operation in part.geometry.ensure_operations():
+            for operation in part.geometry.operations:
                 inputs = f" ← {', '.join(operation.inputs)}" if operation.inputs else ""
                 self._node(f"{operation.id} · {self._operation_name(operation.kind)}{inputs}",
                            ("feature", index, operation.id), geometry)
@@ -248,10 +318,13 @@ class Workbench(QWidget):
             self._node(item.name, ("rp", index), rps)
         loads = self._node(T("载荷", "Loads"), ("loads", None), root)
         for index, item in enumerate(self.project.loads):
-            self._node(f"{item.name} [{item.kind}]", ("load", index), loads)
+            self._node(f"{item.name} · {self._load_name(item.kind)}", ("load", index), loads)
         bcs = self._node(T("边界条件", "Boundary conditions"), ("boundaries", None), root)
         for index, item in enumerate(self.project.boundaries):
             self._node(item.name, ("boundary", index), bcs)
+        constraints = self._node(T("约束", "Constraints"), ("constraints", None), root)
+        for index, item in enumerate(self.project.constraints):
+            self._node(f"{item.name} [{item.kind}]", ("constraint", index), constraints)
         self._node(T("求解器", "Solver"), ("solver", None), root)
         self._restore_tree_state(state)
         self.tree.blockSignals(False)
@@ -315,6 +388,160 @@ class Workbench(QWidget):
         for row in range(self.tree.topLevelItemCount()):
             visit(self.tree.topLevelItem(row))
 
+    # --------------------------------------------------------- tree actions
+    def _open_tree_menu(self, position) -> None:
+        """Open the context menu for the model-tree item under the cursor."""
+        item = self.tree.itemAt(position)
+        if item is None:
+            return
+        self.tree.setCurrentItem(item)
+        data = tuple(item.data(0, Qt.ItemDataRole.UserRole) or ())
+        if not data:
+            return
+        # setCurrentItem() may have been rejected by the unsaved-edit guard.
+        # Do not open a menu for the item the user was prevented from entering.
+        if tuple(self._active_tree_data) != data:
+            return
+        kind = data[0]
+        # Keep the menu owned by the workbench window.  A QTreeWidget is an
+        # ordinary child widget, not a top-level native window; using it as a
+        # menu parent can produce ``QWidgetWindow ... must be a top level
+        # window`` warnings with some Qt platform plugins.
+        menu = QMenu(self.window())
+
+        def add_action(label, callback):
+            action = menu.addAction(label)
+            action.triggered.connect(lambda _checked=False, action_callback=callback: action_callback())
+            return action
+
+        def add_section(_title):
+            # QMenu.addSection() is rendered as an empty row by some Qt
+            # styles used with PySide6.  The menu already has concise action
+            # names, so separators are sufficient and avoid a blank first
+            # item in the tree context menu.
+            if menu.actions():
+                menu.addSeparator()
+
+        def add_geometry_actions(part_index):
+            add_section(T("几何", "Geometry"))
+            primitives = [
+                (T("Box", "Box"), "box"),
+                (T("Wedge", "Wedge"), "wedge"),
+                (T("Cylinder", "Cylinder"), "cylinder"),
+                (T("Sphere", "Sphere"), "sphere"),
+                (T("Cone", "Cone"), "cone"),
+                (T("Torus", "Torus"), "torus"),
+            ]
+            for label, primitive_kind in primitives:
+                add_action(label, lambda p=part_index, k=primitive_kind: self._add_primitive(p, k))
+            add_section(T("布尔", "Boolean"))
+            for label, boolean_kind in [
+                (T("并集", "Union"), "fuse"),
+                (T("差集", "Difference"), "cut"),
+                (T("交集", "Intersection"), "intersect"),
+                (T("分割", "Fragment"), "fragment"),
+            ]:
+                add_action(label, lambda p=part_index, k=boolean_kind: self._add_boolean(p, k))
+            add_section(T("变换", "Transform"))
+            for label, transform_kind in [
+                (T("平移", "Translate"), "translate"),
+                (T("旋转", "Rotate"), "rotate"),
+                (T("缩放", "Dilate"), "dilate"),
+                (T("镜像", "Mirror"), "mirror"),
+            ]:
+                add_action(label, lambda p=part_index, k=transform_kind: self._add_transform(p, k))
+
+        if kind in {"project", "parts"}:
+            add_section(T("模型", "Model"))
+            add_action(T("零件", "Part"), self.add_part)
+            add_action(T("导入 STEP", "Import STEP"), self.importPartStepRequested.emit)
+            union_action = menu.addAction(T("Part 并集合并", "Union Parts"))
+            union_action.setEnabled(all(
+                part.geometry.source.casefold() != "discrete"
+                for part in self.project.parts))
+            union_action.triggered.connect(lambda _checked=False: self.merge_parts())
+        if kind in {"project", "assembly", "instances"}:
+            add_section(T("装配", "Assembly"))
+            add_action(T("实例", "Instance"), self.add_instance)
+        if kind in {"project", "assembly", "rps"}:
+            add_action(T("参考点", "Reference point"), self.add_reference_point)
+        if kind in {"project", "loads"}:
+            add_section(T("载荷", "Loads"))
+            for label, load_kind in [
+                (T("压力", "Pressure"), "pressure"),
+                (T("体力", "Body force"), "body_force"),
+                (T("集中力", "Concentrated force"), "concentrated_force"),
+                (T("力矩", "Moment"), "moment"),
+                (T("参考点-参考点弹簧", "RP-to-RP spring"), "spring_rp_rp"),
+                (T("参考点-固定点弹簧", "RP-to-point spring"), "spring_rp_point"),
+                (T("自由度罚函数", "DoF penalty"), "penalty_dof"),
+                (T("自接触", "Self contact"), "contact_self"),
+                (T("接触", "Contact"), "contact"),
+            ]:
+                add_action(label, lambda k=load_kind: self.add_load(k))
+        if kind in {"project", "boundaries"}:
+            add_section(T("边界", "Boundaries"))
+            add_action(T("节点边界", "Node boundary"), lambda: self.add_boundary("nodes"))
+            add_action(T("参考点边界", "Reference-point boundary"),
+                       lambda: self.add_boundary("reference_point"))
+        if kind in {"project", "constraints"}:
+            add_section(T("约束", "Constraints"))
+            add_action(T("耦合", "Coupling"), lambda: self.add_constraint("couple"))
+        if kind in {"part", "materials"}:
+            part_index = int(data[1]) if kind == "part" else int(data[1])
+            add_section(T("材料", "Materials"))
+            for label, material_kind in [
+                (T("线弹性", "Linear elastic"), "linear_elastic"),
+                (T("Neo-Hookean", "Neo-Hookean"), "neo_hookean"),
+                (T("Neo-Hookean lnJ", "Neo-Hookean lnJ"), "neo_hookean_lnj"),
+            ]:
+                add_action(label, lambda p=part_index, k=material_kind: self.add_material(p, k))
+        if kind in {"part", "geometry"} and self.project.parts[int(data[1])].geometry.source.casefold() != "discrete":
+            part_index = int(data[1])
+            add_geometry_actions(part_index)
+        if kind in {"part", "node_sets", "element_sets", "surface_sets"}:
+            part_index = int(data[1])
+            if kind == "part":
+                add_section(T("集合", "Sets"))
+                for set_kind, label in (
+                    ("node_sets", T("节点集", "Node set")),
+                    ("element_sets", T("单元集", "Element set")),
+                    ("surface_sets", T("表面集", "Surface set")),
+                ):
+                    add_action(label, lambda p=part_index, k=set_kind: self._add_set(p, k))
+            else:
+                set_kind = kind
+                add_action(
+                    T({"node_sets": "节点集", "element_sets": "单元集", "surface_sets": "表面集"}[kind],
+                      {"node_sets": "Node set", "element_sets": "Element set", "surface_sets": "Surface set"}[kind]),
+                    lambda p=part_index, k=set_kind: self._add_set(p, k))
+        if kind in {"geometry", "part"}:
+            part_index = int(data[1])
+            mesh_action = menu.addAction(T("剖分此 Part", "Mesh this Part"))
+            mesh_action.triggered.connect(lambda _checked=False, p=part_index: self._mesh_part(p))
+        if kind == "part" and self.project.parts[int(data[1])].geometry.source.casefold() != "discrete":
+            step_action = menu.addAction(T("导出 STEP", "Export STEP"))
+            step_action.triggered.connect(
+                lambda _checked=False, p=int(data[1]): self.exportPartStepRequested.emit(p))
+        if kind in {"part", "feature", "material", "set", "instance", "rp", "boundary", "load", "constraint"}:
+            menu.addSeparator()
+            delete_action = menu.addAction(T("删除", "Delete"))
+            if kind == "feature":
+                delete_action.triggered.connect(
+                    lambda _checked=False, p=int(data[1]), feature=data[2]: self._delete_feature(p, feature))
+            elif kind == "material":
+                delete_action.triggered.connect(
+                    lambda _checked=False, p=int(data[1]), m=int(data[2]): self._delete_material(p, m))
+            elif kind == "set":
+                delete_action.triggered.connect(
+                    lambda _checked=False, p=int(data[1]), k=data[2], i=int(data[3]): self._delete_set(p, k, i))
+            else:
+                delete_action.triggered.connect(
+                    lambda _checked=False, object_kind=kind, object_index=int(data[1]):
+                    self._delete(object_kind, object_index))
+        if menu.actions():
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+
     # ------------------------------------------------------------ view modes
     def _selected_part_index(self) -> int | None:
         data = tuple(self._active_tree_data or ())
@@ -330,7 +557,6 @@ class Workbench(QWidget):
         if not 0 <= index < len(modes):
             return
         self._view_mode = modes[index]
-        LOGGER.info("viewport mode changed: %s", self._view_mode)
         self._update_view_tabs()
         self._render_current_view()
 
@@ -340,8 +566,11 @@ class Workbench(QWidget):
         part_index = self._selected_part_index()
         part_available = bool(part_index is not None and 0 <= part_index < len(self.project.parts) and
                               self.project.parts[part_index].name in self._mesh_parts)
-        all_available = bool(self.project.parts) and bool(self.project.instances) and all(
-            part.name in self._mesh_parts for part in self.project.parts)
+        # The assembly mesh only needs Parts that are actually instantiated.
+        # An uninstantiated CAD Part must not block a mesh-only assembly view.
+        instance_part_names = {item.part_name for item in self.project.instances}
+        all_available = bool(instance_part_names) and all(
+            name in self._mesh_parts for name in instance_part_names)
         self.view_tabs.setTabEnabled(1, part_available)
         self.view_tabs.setTabEnabled(3, all_available)
         current = self.view_tabs.currentIndex()
@@ -365,34 +594,42 @@ class Workbench(QWidget):
         if self._view_mode == "part_geometry":
             if part.name not in self._brep_part_records:
                 raise RuntimeError(f"BREP cache is missing Part: {part.name}")
+            # Part views are reserved for selecting that Part's own CAD
+            # entities.  Assembly reference points and load glyphs belong to
+            # the assembly views and must not intercept or obscure picking.
             self.preview.show_brep(self._brep_part_records[part.name])
             self.preview.highlight_entity(self._preview_highlight)
-            self.preview_mode.setText(T("Part 几何", "Part Geometry"))
+            if part.geometry.source.casefold() == "discrete":
+                self.preview_mode.setText(T("Part 离散几何", "Part Discrete Geometry"))
+            else:
+                self.preview_mode.setText(T("Part 几何", "Part Geometry"))
         elif self._view_mode == "assembly_geometry":
             if not self._brep_assembly_records:
                 raise RuntimeError("BREP cache is missing assembly geometry.")
             self.preview.show_brep(
                 self._brep_assembly_records,
-                reference_points=self._reference_point_records())
+                reference_points=self._reference_point_records(),
+                load_records=self._load_visual_records(
+                    visible_records=self._brep_assembly_records))
             self.preview.highlight_entity(self._preview_highlight)
             self.preview_mode.setText(T("装配体几何", "Assembly Geometry"))
         elif self._view_mode == "part_mesh":
             mesh = self._mesh_parts.get(part.name)
             if mesh is None:
-                LOGGER.warning("Part mesh view requested before mesh exists: part=%s", part.name)
                 self.preview.clear_scene()
                 return
             self.preview.show_part(mesh, part.name, f"{part.name}-mesh")
             self.preview_mode.setText(T("Part 网格", "Part Mesh"))
         elif self._view_mode == "assembly_mesh":
             if not all(part_item.name in self._mesh_parts for part_item in self.project.parts):
-                LOGGER.warning("assembly mesh view requested before all Parts are meshed")
                 self.preview.clear_scene()
                 return
             if self._assembly_mesh_controller is None:
-                LOGGER.info("building assembly mesh view from cached Part meshes")
                 self._assembly_mesh_controller = self._cached_assembly_view()
-            self.preview.show_controller(self._assembly_mesh_controller, brep=False)
+            self.preview.show_controller(
+                self._assembly_mesh_controller, brep=False,
+                reference_points=self._reference_point_records(),
+                load_records=self._load_visual_records())
             self.preview_mode.setText(T("装配体网格", "Assembly Mesh"))
 
     def _cached_assembly_view(self):
@@ -400,7 +637,10 @@ class Workbench(QWidget):
         from torchfea.model import Assembly, Instance, ReferencePoint
 
         assembly = Assembly()
+        instance_part_names = {item.part_name for item in self.project.instances}
         for definition in self.project.parts:
+            if definition.name not in instance_part_names:
+                continue
             mesh = self._mesh_parts.get(definition.name)
             if mesh is None:
                 raise RuntimeError(f"Part mesh is missing: {definition.name}")
@@ -419,11 +659,220 @@ class Workbench(QWidget):
             for definition in self.project.reference_points
         ]
 
+    def _load_visual_records(self, part_name=None, visible_records=None, mesh_part=None):
+        """Build display-only arrows and links for the current viewport.
+
+        The solver-facing load definitions remain unchanged.  This adapter
+        turns their targets into a small number of world-space glyph records,
+        allowing the same viewer to show CAD, Part mesh, and assembly mesh
+        products without introducing a second load model.
+        """
+        instance_by_name = {item.name: item for item in self.project.instances}
+        reference_points = {}
+        for item in self.project.reference_points:
+            point = np.asarray(item.point, dtype=float).reshape(-1)
+            if point.size != 3 or not np.all(np.isfinite(point)):
+                raise ValueError(f"Reference point '{item.name}' must contain three finite coordinates.")
+            reference_points[item.name] = point
+        centers = {}
+        face_records = []
+
+        def add_group(key, points):
+            values = np.asarray(points, dtype=float).reshape(-1, 3)
+            if len(values):
+                centers[key] = np.mean(values, axis=0)
+
+        if visible_records:
+            grouped = {}
+            for record in visible_records:
+                points = np.asarray(record.get("points", []), dtype=float)
+                if points.ndim != 2 or points.shape[1] != 3 or not len(points):
+                    continue
+                key = record.get("instance_name") or record.get("part_name") or part_name
+                grouped.setdefault(key, []).append(points)
+                face_records.append((key, record))
+            for key, groups in grouped.items():
+                add_group(key, np.concatenate(groups, axis=0))
+        else:
+            # FE mesh previews do not carry BREP faces.  Their node clouds
+            # still give stable load origins in both Part and assembly views.
+            if mesh_part is not None:
+                add_group(part_name, mesh_part.nodes.detach().cpu().numpy())
+            else:
+                for instance in self.project.instances:
+                    if part_name is not None and instance.part_name != part_name:
+                        continue
+                    native_part = self._mesh_parts.get(instance.part_name)
+                    if native_part is None:
+                        continue
+                    points = native_part.nodes.detach().cpu().numpy()
+                    points = self._transform_points(points, instance.translation, instance.rotation)
+                    add_group(instance.name, points)
+
+        def target_center(instance_name: str, target_part: str | None = None):
+            if instance_name in centers:
+                return centers[instance_name]
+            instance = instance_by_name.get(instance_name)
+            if instance is not None:
+                if instance.name in centers:
+                    return centers[instance.name]
+                if instance.part_name in centers:
+                    return centers[instance.part_name]
+                target_part = instance.part_name
+            if target_part in centers:
+                return centers[target_part]
+            if centers:
+                return next(iter(centers.values()))
+            return None
+
+        def load_is_visible(load):
+            if not load.enabled:
+                return False
+            if part_name is None:
+                return True
+            instance = instance_by_name.get(load.instance)
+            instance2 = instance_by_name.get(load.instance2)
+            return ((instance is not None and instance.part_name == part_name)
+                    or (instance2 is not None and instance2.part_name == part_name)
+                    or not load.instance)
+
+        def load_records_for_faces(load):
+            instance = instance_by_name.get(load.instance)
+            load_part = instance.part_name if instance is not None else part_name
+            candidates = [
+                record for key, record in face_records
+                if (load.instance and key == load.instance)
+                or (load_part and key == load_part)
+                or (not load.instance and key == part_name)
+            ]
+            # A picked CAD surface stores its OCC tag in the normal FE
+            # selection string.  Restrict pressure arrows to that face.
+            target_tag = None
+            target_part = next(
+                (item for item in self.project.parts if item.name == load_part), None)
+            if target_part is None:
+                raise ValueError(f"Part '{load_part}' is missing for load '{load.name}'.")
+            surface = next((item for item in target_part.surface_sets
+                            if item.name == load.target), None)
+            if surface is None and load.target != target_part.exterior_surface:
+                raise ValueError(
+                    f"Surface set '{load.target}' is missing on Part '{target_part.name}'.")
+            selection = surface.selection if surface is not None else ""
+            if selection.startswith("gmsh:surface:"):
+                target_tag = int(selection.rsplit(":", 1)[1])
+            if target_tag is not None:
+                filtered = [record for record in candidates
+                            if int(record.get("surface_tag", -1)) == target_tag]
+                if filtered:
+                    return filtered
+            return candidates
+
+        records = []
+        for load in self.project.loads:
+            if not load_is_visible(load):
+                continue
+            kind = str(load.kind)
+            values = np.asarray(load.values, dtype=float).reshape(-1)
+            colors = {
+                "pressure": (1.0, .25, .12),
+                "body_force": (.25, .75, 1.0),
+                "concentrated_force": (1.0, .30, .12),
+                "moment": (.90, .30, 1.0),
+                "spring_rp_rp": (.95, .78, .15),
+                "spring_rp_point": (.95, .78, .15),
+                "contact": (.30, 1.0, .50),
+                "contact_self": (.30, 1.0, .50),
+                "penalty_dof": (.95, .50, .15),
+            }
+            color = colors[kind]
+            if kind == "pressure":
+                pressure = float(values[0])
+                candidates = load_records_for_faces(load)
+                if candidates:
+                    for face in candidates[:16]:
+                        points = np.asarray(face.get("points", []), dtype=float)
+                        triangles = np.asarray(face.get("triangles", []), dtype=int)
+                        if len(points) == 0 or len(triangles) == 0:
+                            continue
+                        triangle = triangles[min(len(triangles) - 1, len(triangles) // 2)]
+                        if len(triangle) < 3:
+                            continue
+                        a, b, c = points[triangle[:3]]
+                        normal = np.cross(b - a, c - a)
+                        norm = np.linalg.norm(normal)
+                        if norm <= 1e-12:
+                            continue
+                        normal /= norm
+                        face_center = np.mean(points[triangle[:3]], axis=0)
+                        body_center = target_center(load.instance)
+                        if body_center is not None and np.dot(normal, face_center - body_center) < 0:
+                            normal *= -1.0
+                        records.append({"kind": kind, "name": load.name,
+                                        "origin": face_center,
+                                        "vector": normal * (1.0 if pressure >= 0 else -1.0),
+                                        "color": color})
+                else:
+                    origin = target_center(load.instance)
+                    if origin is not None:
+                        records.append({"kind": kind, "name": load.name, "origin": origin,
+                                        "vector": np.array([0., 0., 1. if pressure >= 0 else -1.]),
+                                        "color": color})
+            elif kind == "body_force":
+                vector = values[:3]
+                origin = target_center(load.instance)
+                if origin is not None and np.linalg.norm(vector) > 1e-12:
+                    records.append({"kind": kind, "name": load.name, "origin": origin,
+                                    "vector": vector, "color": color})
+            elif kind in {"concentrated_force", "moment"}:
+                origin = reference_points[load.target]
+                vector = values[:3]
+                if origin is not None and np.linalg.norm(vector) > 1e-12:
+                    records.append({"kind": kind, "name": load.name, "origin": origin,
+                                    "vector": vector, "color": color})
+            elif kind == "spring_rp_rp":
+                start = reference_points.get(load.target)
+                end = reference_points.get(load.target2)
+                if start is not None and end is not None:
+                    records.append({"kind": kind, "name": load.name,
+                                    "start": start, "end": end, "color": color})
+            elif kind == "spring_rp_point":
+                start = reference_points.get(load.target)
+                end = values[:3]
+                if start is not None:
+                    records.append({"kind": kind, "name": load.name,
+                                    "start": start, "end": end, "color": color})
+            elif kind == "contact":
+                start = target_center(load.instance)
+                end = target_center(load.instance2, part_name)
+                if start is not None and end is not None and np.linalg.norm(start - end) > 1e-12:
+                    records.append({"kind": kind, "name": load.name,
+                                    "start": start, "end": end, "color": color})
+            elif kind == "contact_self":
+                origin = target_center(load.instance)
+                if origin is not None:
+                    records.extend([
+                        {"kind": kind, "name": load.name, "origin": origin,
+                         "vector": np.array([0., 0., 1.]), "color": color},
+                        {"kind": kind, "name": load.name, "origin": origin,
+                         "vector": np.array([0., 0., -1.]), "color": color},
+                    ])
+            elif kind == "penalty_dof":
+                # Penalty_DoF is a solver coupling rather than a physical
+                # force.  A small axis glyph still makes its target and DoF
+                # visible while editing the model.
+                origin = reference_points.get(load.target, target_center(load.target))
+                if origin is not None:
+                    dof = int(round(values[0]))
+                    axis = np.zeros(3)
+                    axis[dof % 3] = 1.0
+                    records.append({"kind": kind, "name": load.name,
+                                    "origin": origin, "vector": axis,
+                                    "color": color})
+        return records
+
     def _invalidate_mesh_cache(self, clear_brep: bool = True) -> None:
-        if self._mesh_parts or self._assembly_mesh_controller is not None:
-            LOGGER.info("invalidating mesh view cache")
         self._mesh_parts = {}
-        self._preview_controller = None
+        self._seed_discrete_mesh_cache()
         self._assembly_mesh_controller = None
         if clear_brep:
             self._brep_part_records = {}
@@ -438,29 +887,50 @@ class Workbench(QWidget):
         if hasattr(self, "view_tabs"):
             self._update_view_tabs()
 
+    def _seed_discrete_mesh_cache(self) -> None:
+        """Expose imported native meshes without invoking Gmsh again."""
+        for definition in self.project.parts:
+            geometry = definition.geometry
+            if geometry.source.casefold() != "discrete":
+                continue
+            native_part = geometry.runtime_part
+            if native_part is None and geometry.discrete_data is not None:
+                # A project restored from a UI/history snapshot may retain
+                # only the native serialized Part.  Rehydrate it directly;
+                # a discrete Part must never go through Gmsh meshing again.
+                from torchfea.interfaces import Serializable
+                native_part = Serializable._deserialize(geometry.discrete_data)
+                geometry.runtime_part = native_part
+            if native_part is not None:
+                self._mesh_parts[definition.name] = native_part
+
     def _mesh_part(self, part_index: int) -> None:
         definition = self.project.parts[part_index]
         self._mesh_parts.pop(definition.name, None)
-        self._preview_controller = None
         self._assembly_mesh_controller = None
         if self._view_mode in {"part_mesh", "assembly_mesh"}:
             self.preview.clear_scene()
         self._update_view_tabs()
         try:
-            LOGGER.info("Part mesh requested: part=%s mesh_size=%r", definition.name, self.project.mesh_size)
             self.message.setText(T(f"正在剖分 {definition.name}…", f"Meshing {definition.name}…"))
-            self._mesh_parts[definition.name] = create_part(
-                definition.geometry.ensure_operations(), self.project.mesh_size)
+            if definition.geometry.source.casefold() == "discrete":
+                native_part = definition.geometry.runtime_part
+                if native_part is None:
+                    raise ValueError(f"Discrete Part '{definition.name}' has no native mesh.")
+                self._mesh_parts[definition.name] = native_part
+                status = T(f"{definition.name} 已有离散网格", f"{definition.name} already has a discrete mesh")
+            else:
+                self._mesh_parts[definition.name] = create_part(
+                    definition.geometry.operations, self.project.mesh_size)
+                status = T(f"{definition.name} 网格已生成", f"Mesh generated for {definition.name}")
             self._update_view_tabs()
             self.view_tabs.setCurrentIndex(1)
             self._render_current_view()
-            self.message.setText(T(f"{definition.name} 网格已生成", f"Mesh generated for {definition.name}"))
+            self.message.setText(status)
         except Exception as exc:
-            LOGGER.exception("Part mesh failed: part=%s", definition.name)
             self.message.setText(T("剖分失败：", "Meshing failed: ") + str(exc))
             QMessageBox.warning(self, T("Part 剖分失败", "Part meshing failed"),
-                                T(f"{exc}\n\n详细日志：{log_path()}",
-                                  f"{exc}\n\nDetailed log: {log_path()}"))
+                                str(exc))
 
     def _sets_branch(self, parent, caption, kind, part_index, items, auto_items=()):
         branch = self._node(caption, (kind, part_index), parent)
@@ -483,6 +953,7 @@ class Workbench(QWidget):
     @staticmethod
     def _operation_name(kind: str) -> str:
         names = {
+            "step_import": T("导入 STEP", "STEP import"),
             "fuse": T("并集", "Union"),
             "cut": T("差集", "Difference"),
             "intersect": T("交集", "Intersection"),
@@ -503,12 +974,33 @@ class Workbench(QWidget):
         }
         return names.get(kind, kind)
 
+    @staticmethod
+    def _load_name(kind: str) -> str:
+        names = {
+            "pressure": T("压力", "Pressure"),
+            "body_force": T("体力", "Body force"),
+            "concentrated_force": T("集中力", "Concentrated force"),
+            "moment": T("力矩", "Moment"),
+            "spring_rp_rp": T("参考点弹簧", "RP spring"),
+            "spring_rp_point": T("固定点弹簧", "Point spring"),
+            "penalty_dof": T("自由度罚函数", "DoF penalty"),
+            "contact_self": T("自接触", "Self contact"),
+            "contact": T("接触", "Contact"),
+        }
+        return names.get(kind, kind)
+
     def _selected(self) -> None:
         items = self.tree.selectedItems()
         if not items:
             return
         data = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if data is None:
+            return
+        data = tuple(data)
+        if data != tuple(self._active_tree_data) and not self._confirm_editor_switch():
+            return
         self._active_tree_data = tuple(data)
+        self._editor_dirty = False
         kind = data[0]
         if kind == "exterior_surface":
             # The Part exterior is an aggregate over all BREP child faces;
@@ -541,6 +1033,7 @@ class Workbench(QWidget):
         elif kind == "instance": editor = self._instance_editor(data[1])
         elif kind == "rp": editor = self._rp_editor(data[1])
         elif kind == "boundary": editor = self._boundary_editor(data[1])
+        elif kind == "constraint": editor = self._constraint_editor(data[1])
         elif kind == "load": editor = self._load_editor(data[1])
         elif kind == "solver": editor = self._solver_editor()
         else: editor = self._hint_editor(T("选择下方对象进行编辑。", "Select an item below to edit it."))
@@ -556,6 +1049,67 @@ class Workbench(QWidget):
             old.deleteLater()
         self.editor = widget
         self.editor_scroll.setWidget(widget)
+        self._editor_dirty = False
+        self._watch_editor(widget)
+
+    def _watch_editor(self, widget: QWidget) -> None:
+        """Mark the current editor dirty when a user changes any field."""
+        for field in widget.findChildren(QLineEdit):
+            field.textChanged.connect(self._mark_editor_dirty)
+        for field in widget.findChildren(QComboBox):
+            field.currentIndexChanged.connect(self._mark_editor_dirty)
+        for field in widget.findChildren(QDoubleSpinBox):
+            field.valueChanged.connect(self._mark_editor_dirty)
+        for field in widget.findChildren(QSpinBox):
+            field.valueChanged.connect(self._mark_editor_dirty)
+        for field in widget.findChildren(QCheckBox):
+            field.stateChanged.connect(self._mark_editor_dirty)
+
+    def _mark_editor_dirty(self, *_args) -> None:
+        self._editor_dirty = True
+
+    def _confirm_editor_switch(self) -> bool:
+        """Ask before replacing an editor that has not been applied."""
+        if not self._editor_dirty:
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(T("未应用修改", "Unapplied changes"))
+        box.setText(T(
+            "当前节点有未应用的修改，是否放弃并切换？",
+            "The current node has unapplied changes. Discard them and switch?"))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText(T("放弃并切换", "Discard and switch"))
+        box.button(QMessageBox.StandardButton.No).setText(T("继续编辑", "Keep editing"))
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            return True
+        self._restore_active_tree_item()
+        return False
+
+    def _confirm_submit_with_pending_edit(self) -> bool:
+        """Ask before leaving an editor with fields that were not applied."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(T("未应用修改", "Unapplied changes"))
+        box.setText(T(
+            "当前节点有未应用的修改，是否放弃并进入后处理？",
+            "The current node has unapplied changes. Discard them and open postprocess?"))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText(T("放弃并提交", "Discard and submit"))
+        box.button(QMessageBox.StandardButton.No).setText(T("继续编辑", "Keep editing"))
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def _restore_active_tree_item(self) -> None:
+        """Restore the previous tree selection after a canceled switch."""
+        item = self._find_tree_data(self._active_tree_data)
+        if item is None:
+            return
+        self.tree.blockSignals(True)
+        self.tree.setCurrentItem(item)
+        item.setSelected(True)
+        self.tree.blockSignals(False)
 
     @staticmethod
     def _page(title: str, description: str = ""):
@@ -575,11 +1129,8 @@ class Workbench(QWidget):
 
     def _project_editor(self):
         page, layout, form = self._page(T("有限元模型", "Finite element model"))
-        label = QLineEdit(self.project.label)
-        form.addRow(T("模型名称", "Model label"), label)
-        button = QPushButton(T("保存名称", "Save label"))
-        button.clicked.connect(lambda: self._save_project_label(label.text()))
-        layout.addWidget(button)
+        form.addRow(T("零件", "Parts"), QLabel(str(len(self.project.parts))))
+        form.addRow(T("实例", "Instances"), QLabel(str(len(self.project.instances))))
         layout.addStretch(1)
         return page
 
@@ -588,12 +1139,21 @@ class Workbench(QWidget):
         page, layout, form = self._page(T("零件定义", "Part definition"))
         name = QLineEdit(part.name)
         form.addRow(T("名称", "Name"), name)
+        source = part.geometry.source.casefold()
+        form.addRow(T("几何来源", "Geometry source"), QLabel(
+            T("离散网格（无 CAD 历史）", "Discrete mesh (no CAD history)")
+            if source == "discrete" else T("CAD 特征历史", "CAD feature history")))
         form.addRow(T("材料数", "Materials"), QLabel(str(len(part.materials))))
         save = QPushButton(T("应用零件属性", "Apply part properties"))
         save.clicked.connect(lambda: self._save_part(index, name.text()))
         delete = QPushButton(T("删除零件", "Delete part")); delete.setStyleSheet("background:#9d3434")
         delete.clicked.connect(lambda: self._delete("part", index))
-        layout.addWidget(save); layout.addWidget(delete); layout.addStretch(1)
+        layout.addWidget(save)
+        if source != "discrete":
+            export_step = QPushButton(T("导出 STEP", "Export STEP"))
+            export_step.clicked.connect(lambda: self.exportPartStepRequested.emit(index))
+            layout.addWidget(export_step)
+        layout.addWidget(delete); layout.addStretch(1)
         return page
 
     def _materials_editor(self, part_index: int):
@@ -671,8 +1231,17 @@ class Workbench(QWidget):
 
     def _geometry_editor(self, index: int):
         geometry = self.project.parts[index].geometry
-        operations = geometry.ensure_operations()
+        operations = geometry.operations
         page, layout, form = self._page(T("几何与剖分", "Geometry and meshing"))
+        if geometry.source.casefold() == "discrete":
+            form.addRow(T("来源", "Source"), QLabel(
+                T("INP/原生有限元网格", "INP/native finite-element mesh")))
+            form.addRow(T("CAD 历史", "CAD history"), QLabel(
+                T("无（离散几何）", "None (discrete geometry)")))
+            form.addRow(T("节点数", "Nodes"), QLabel(
+                str(len(geometry.runtime_part.nodes))))
+            layout.addStretch(1)
+            return page
         # Geometry and history nodes are containers.  Their editor only
         # exposes actions that operate on the Part as a whole.  Parameters
         # are shown after selecting an individual feature node, so there is
@@ -684,7 +1253,11 @@ class Workbench(QWidget):
         fields = {}
         if context == "feature":
             form.addRow(T("特征", "Feature"), QLabel(f"{operation.id} · {self._operation_name(operation.kind)}"))
-            if operation.kind in {"fuse", "cut", "intersect", "fragment"}:
+            if operation.kind == "step_import":
+                form.addRow(T("文件", "File"), QLabel(str(operation.values.get("filename", "STEP"))))
+                form.addRow(T("状态", "Status"), QLabel(
+                    T("文件内容已嵌入模型", "File content is embedded in the model")))
+            elif operation.kind in {"fuse", "cut", "intersect", "fragment"}:
                 form.addRow(T("输入特征", "Input features"), QLabel(", ".join(operation.inputs)))
             else:
                 for key, value in operation.values.items():
@@ -707,7 +1280,7 @@ class Workbench(QWidget):
         for field in fields.values():
             field.valueChanged.connect(update_live_preview)
             field.editingFinished.connect(commit_live_values)
-        if context == "feature":
+        if context == "feature" and operation.kind != "step_import":
             save = QPushButton(T("应用 CAD 特征", "Apply CAD feature"))
             save.clicked.connect(lambda: self._save_feature(index, operation.id, fields))
             layout.addWidget(save)
@@ -854,16 +1427,74 @@ class Workbench(QWidget):
 
     def _boundary_editor(self, index: int):
         item = self.project.boundaries[index]
-        page, layout, form = self._page(T("位移边界条件", "Displacement boundary"))
-        name = QLineEdit(item.name); instance = self._instance_combo(item.instance); nodes = QLineEdit(item.node_set)
-        dofs = [QComboBox() for _ in range(3)]
+        page, layout, form = self._page(T("边界条件", "Boundary condition"))
+        name = QLineEdit(item.name)
+        kind = QComboBox()
+        kind.addItem(T("节点边界", "Node boundary"), "nodes")
+        kind.addItem(T("参考点边界", "Reference-point boundary"), "reference_point")
+        kind.setCurrentIndex(max(0, kind.findData(item.kind)))
+        instance = self._instance_combo(item.instance)
+        nodes = self._node_set_combo(item.instance, item.node_set)
+        reference_point = self._reference_point_combo(item.reference_point)
+        dofs = [QComboBox() for _ in range(6)]
         for i, box in enumerate(dofs):
-            box.addItem(f"U{i + 1}", i)
+            box.addItem(f"U{i + 1}" if i < 3 else f"R{i - 2}", i)
             box.addItem(T("自由", "Free"), -1)
             box.setCurrentIndex(0 if i in item.dofs else 1)
-        form.addRow(T("名称", "Name"), name); form.addRow(T("实例", "Instance"), instance); form.addRow(T("节点集", "Node set"), nodes); form.addRow(T("约束自由度", "Fixed DOFs"), self._row(dofs))
-        save = QPushButton(T("应用边界", "Apply boundary")); save.clicked.connect(lambda: self._save_boundary(index, name.text(), instance.currentText(), nodes.text(), dofs))
+        form.addRow(T("名称", "Name"), name)
+        form.addRow(T("类型", "Type"), kind)
+        instance_row = form.rowCount(); form.addRow(T("实例", "Instance"), instance)
+        node_row = form.rowCount(); form.addRow(T("节点集", "Node set"), nodes)
+        rp_row = form.rowCount(); form.addRow(T("参考点", "Reference point"), reference_point)
+        dof_row = form.rowCount(); form.addRow(T("约束自由度", "Fixed DOFs"), self._row(dofs))
+
+        def update_fields(*_):
+            reference = kind.currentData() == "reference_point"
+            form.setRowVisible(instance_row, not reference)
+            form.setRowVisible(node_row, not reference)
+            form.setRowVisible(rp_row, reference)
+            form.setRowVisible(dof_row, True)
+            for i, box in enumerate(dofs):
+                box.setVisible(reference or i < 3)
+
+        kind.currentIndexChanged.connect(update_fields)
+        instance.currentTextChanged.connect(
+            lambda value: self._replace_combo_items(
+                nodes, self._node_set_names(value), nodes.currentText()))
+        update_fields()
+        save = QPushButton(T("应用边界", "Apply boundary")); save.clicked.connect(
+            lambda: self._save_boundary(index, name.text(), kind.currentData(),
+                                        instance.currentText(), nodes.currentText(),
+                                        reference_point.currentText(), dofs))
         delete = QPushButton(T("删除边界", "Delete boundary")); delete.setStyleSheet("background:#9d3434"); delete.clicked.connect(lambda: self._delete("boundary", index))
+        layout.addWidget(save); layout.addWidget(delete); layout.addStretch(1)
+        return page
+
+    def _constraint_editor(self, index: int):
+        item = self.project.constraints[index]
+        page, layout, form = self._page(T("约束定义", "Constraint definition"))
+        name = QLineEdit(item.name)
+        kind = QComboBox()
+        kind.addItem(T("耦合", "Coupling"), "couple")
+        kind.setCurrentIndex(max(0, kind.findData(item.kind)))
+        instance = self._instance_combo(item.instance)
+        nodes = self._node_set_combo(item.instance, item.node_set)
+        reference_point = self._reference_point_combo(item.reference_point)
+        form.addRow(T("名称", "Name"), name)
+        form.addRow(T("类型", "Type"), kind)
+        form.addRow(T("实例", "Instance"), instance)
+        form.addRow(T("节点集", "Node set"), nodes)
+        form.addRow(T("参考点", "Reference point"), reference_point)
+        instance.currentTextChanged.connect(
+            lambda value: self._replace_combo_items(
+                nodes, self._node_set_names(value), nodes.currentText()))
+        save = QPushButton(T("应用约束", "Apply constraint"))
+        save.clicked.connect(lambda: self._save_constraint(
+            index, name.text(), kind.currentData(), instance.currentText(),
+            nodes.currentText(), reference_point.currentText()))
+        delete = QPushButton(T("删除约束", "Delete constraint"))
+        delete.setStyleSheet("background:#9d3434")
+        delete.clicked.connect(lambda: self._delete("constraint", index))
         layout.addWidget(save); layout.addWidget(delete); layout.addStretch(1)
         return page
 
@@ -871,11 +1502,72 @@ class Workbench(QWidget):
         item = self.project.loads[index]
         page, layout, form = self._page(T("载荷定义", "Load definition"))
         name = QLineEdit(item.name); kind = QComboBox()
-        for text, value in [(T("压力", "Pressure"), "pressure"), (T("体力", "Body force"), "body_force"), (T("集中力", "Concentrated force"), "concentrated_force")]: kind.addItem(text, value)
+        for text, value in [
+            (T("压力", "Pressure"), "pressure"),
+            (T("体力", "Body force"), "body_force"),
+            (T("集中力", "Concentrated force"), "concentrated_force"),
+            (T("力矩", "Moment"), "moment"),
+            (T("参考点-参考点弹簧", "RP-to-RP spring"), "spring_rp_rp"),
+            (T("参考点-固定点弹簧", "RP-to-point spring"), "spring_rp_point"),
+            (T("自由度罚函数", "DoF penalty"), "penalty_dof"),
+            (T("自接触", "Self contact"), "contact_self"),
+            (T("接触", "Contact"), "contact"),
+        ]:
+            kind.addItem(text, value)
         kind.setCurrentIndex(max(0, kind.findData(item.kind)))
-        instance = self._instance_combo(item.instance); target = QLineEdit(item.target); values = [self._number(v) for v in item.values]
-        form.addRow(T("名称", "Name"), name); form.addRow(T("类型", "Type"), kind); form.addRow(T("实例", "Instance"), instance); form.addRow(T("目标", "Target"), target); form.addRow(T("数值 (P 或 Fx/Fy/Fz)", "Values (P or Fx/Fy/Fz)"), self._row(values))
-        save = QPushButton(T("应用载荷", "Apply load")); save.clicked.connect(lambda: self._save_load(index, name.text(), kind.currentData(), instance.currentText(), target.text(), values))
+        instance = self._instance_combo(item.instance)
+        instance2 = self._instance_combo(item.instance2 or item.instance)
+        target = QComboBox()
+        target2 = QComboBox()
+        values = [self._number(v, -1e15, 1e15, 8) for v in self._load_value_defaults(item)]
+        value_labels = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
+        value_row = self._value_grid(values)
+        form.addRow(T("名称", "Name"), name)
+        form.addRow(T("类型", "Type"), kind)
+        instance_row = form.rowCount(); form.addRow(T("实例", "Instance"), instance)
+        instance2_row = form.rowCount(); form.addRow(T("第二实例", "Second instance"), instance2)
+        target_row = form.rowCount(); form.addRow(T("目标", "Target"), target)
+        target2_row = form.rowCount(); form.addRow(T("第二目标", "Second target"), target2)
+        value_row_index = form.rowCount(); form.addRow(T("数值", "Values"), value_row)
+
+        value_counts = {
+            "pressure": 1, "body_force": 3, "concentrated_force": 3,
+            "moment": 3, "spring_rp_rp": 2, "spring_rp_point": 5,
+            "penalty_dof": 3, "contact_self": 10, "contact": 7,
+        }
+        target2_kinds = {"spring_rp_rp", "penalty_dof", "contact"}
+        instance_kinds = {"pressure", "body_force", "contact_self", "contact"}
+
+        def update_fields(*_):
+            load_kind = kind.currentData()
+            self._replace_combo_items(
+                target2,
+                self._load_target_names(load_kind, instance.currentText(), instance2.currentText(), True),
+                target2.currentText())
+            self._replace_combo_items(
+                target,
+                self._load_target_names(load_kind, instance.currentText(), instance2.currentText(), False,
+                                        target2.currentText()),
+                target.currentText())
+            form.setRowVisible(instance_row, load_kind in instance_kinds)
+            form.setRowVisible(instance2_row, load_kind == "contact")
+            form.setRowVisible(target_row, True)
+            form.setRowVisible(target2_row, load_kind in target2_kinds)
+            form.setRowVisible(value_row_index, value_counts.get(load_kind, 0) > 0)
+            count = value_counts.get(load_kind, 0)
+            for value_index, (widget, label) in enumerate(zip(values, value_labels)):
+                widget.setVisible(value_index < count)
+                widget.setToolTip(label)
+
+        kind.currentIndexChanged.connect(update_fields)
+        instance.currentTextChanged.connect(update_fields)
+        instance2.currentTextChanged.connect(update_fields)
+        target2.currentTextChanged.connect(update_fields)
+        update_fields()
+        save = QPushButton(T("应用载荷", "Apply load")); save.clicked.connect(
+            lambda: self._save_load(index, name.text(), kind.currentData(),
+                                    instance.currentText(), instance2.currentText(),
+                                    target.currentText(), target2.currentText(), values))
         delete = QPushButton(T("删除载荷", "Delete load")); delete.setStyleSheet("background:#9d3434"); delete.clicked.connect(lambda: self._delete("load", index))
         layout.addWidget(save); layout.addWidget(delete); layout.addStretch(1)
         return page
@@ -901,6 +1593,25 @@ class Workbench(QWidget):
         # with a newly added part so a new cylinder appears immediately.
         self.project.instances.append(InstanceDefinition(name=f"{name}-1", part_name=name))
         self._changed(T("已添加零件和装配实例", "Part and assembly instance added"))
+
+    def add_step_part(self, path: str) -> None:
+        """Create a Part whose first CAD feature is an embedded STEP import."""
+        history = CADHistory()
+        history.import_step(path)
+        stem = os.path.splitext(os.path.basename(os.fspath(path)))[0] or "ImportedPart"
+        name = stem
+        suffix = 1
+        existing_names = {part.name for part in self.project.parts}
+        while name in existing_names:
+            suffix += 1
+            name = f"{stem}-{suffix}"
+        self.project.parts.append(PartDefinition(
+            name=name, geometry=GeometryDefinition(operations=history.operations)))
+        self.project.instances.append(InstanceDefinition(
+            name=f"{name}-1", part_name=name))
+        self._active_tree_data = ("part", len(self.project.parts) - 1)
+        self._changed(T(f"已导入 Part：{name}", f"Imported Part: {name}"))
+
     def add_instance(self):
         if not self.project.parts:
             QMessageBox.information(self, T("需要零件", "Part required"),
@@ -912,22 +1623,94 @@ class Workbench(QWidget):
         self.project.reference_points.append(ReferencePointDefinition(name=f"RP-{n}"))
         self._active_tree_data = ("rp", n - 1)
         self._changed(T("已添加参考点", "Reference point added"))
-    def add_boundary(self):
+    def add_boundary(self, kind="nodes"):
         if not self.project.instances:
             QMessageBox.information(self, T("需要实例", "Instance required"),
                                     T("请先建立一个装配实例。", "Create an assembly instance first."))
             return
-        n = len(self.project.boundaries) + 1; self.project.boundaries.append(BoundaryDefinition(name=f"BC-{n}", instance=self.project.instances[0].name)); self._changed(T("已添加边界条件", "Boundary added"))
-    def add_load(self):
+        if kind == "reference_point" and not self.project.reference_points:
+            QMessageBox.information(
+                self, T("需要参考点", "Reference point required"),
+                T("请先建立一个参考点。", "Create a reference point first."))
+            return
+        n = len(self.project.boundaries) + 1
+        instance_name = self.project.instances[0].name
+        reference_point = self.project.reference_points[0].name if self.project.reference_points else ""
+        self.project.boundaries.append(BoundaryDefinition(
+            name=f"BC-{n}", instance=instance_name, node_set="all", kind=kind,
+            reference_point=reference_point))
+        self._changed(T("已添加边界条件", "Boundary added"))
+
+    def add_constraint(self, kind="couple"):
+        if not self.project.instances or not self.project.reference_points:
+            QMessageBox.information(
+                self, T("需要实例和参考点", "Instance and reference point required"),
+                T("耦合约束需要先建立实例和参考点。", "A coupling needs an instance and a reference point first."))
+            return
+        n = len(self.project.constraints) + 1
+        self.project.constraints.append(ConstraintDefinition(
+            name=f"Constraint-{n}", kind=kind,
+            instance=self.project.instances[0].name,
+            reference_point=self.project.reference_points[0].name,
+        ))
+        self._active_tree_data = ("constraint", n - 1)
+        self._changed(T("已添加约束", "Constraint added"))
+
+    def add_load(self, kind="pressure"):
         if not self.project.instances:
             QMessageBox.information(self, T("需要实例", "Instance required"),
                                     T("请先建立一个装配实例。", "Create an assembly instance first."))
             return
-        n = len(self.project.loads) + 1; self.project.loads.append(LoadDefinition(name=f"Load-{n}", instance=self.project.instances[0].name)); self._changed(T("已添加载荷", "Load added"))
-    def add_material(self, part_index):
+        reference_point_kinds = {
+            "concentrated_force", "moment", "spring_rp_rp", "spring_rp_point",
+        }
+        if kind in reference_point_kinds and not self.project.reference_points:
+            QMessageBox.information(
+                self, T("需要参考点", "Reference point required"),
+                T("该载荷需要先建立一个参考点。", "This load needs a reference point first."))
+            return
+        if kind == "spring_rp_rp" and len(self.project.reference_points) < 2:
+            QMessageBox.information(
+                self, T("需要两个参考点", "Two reference points required"),
+                T("参考点-参考点弹簧需要两个参考点。",
+                  "An RP-to-RP spring needs two reference points."))
+            return
+        n = len(self.project.loads) + 1
+        instance = self.project.instances[0]
+        part = next((part for part in self.project.parts if part.name == instance.part_name),
+                    self.project.parts[0])
+        reference_points = self.project.reference_points
+        target = part.exterior_surface
+        target2 = ""
+        values = [1.0]
+        if kind == "body_force":
+            target, values = "C3D4", [0.0, 0.0, -9.81e-6]
+        elif kind in {"concentrated_force", "moment"}:
+            target = reference_points[0].name
+            values = [0.0, 0.0, 0.0]
+        elif kind == "spring_rp_rp":
+            target = reference_points[0].name
+            target2 = reference_points[1].name
+            values = [1.0, -1.0]
+        elif kind == "spring_rp_point":
+            target = reference_points[0].name
+            values = [0.0, 0.0, 0.0, 1.0, -1.0]
+        elif kind == "penalty_dof":
+            target, values = instance.name, [0.0, 0.0, 1.0e4]
+        elif kind == "contact_self":
+            values = [0.5, 1.5, 1.5, 1e-5, 40.0, -0.8, -0.85, 1.5, 0.9, 1.0]
+        elif kind == "contact":
+            target2 = part.exterior_surface
+            values = [1e-5, 40.0, -0.4, -0.85, 1.5, 0.9, 1.0]
+        self.project.loads.append(LoadDefinition(
+            name=f"Load-{n}", kind=kind, instance=instance.name,
+            instance2=instance.name, target=target, target2=target2, values=values))
+        self._active_tree_data = ("load", n - 1)
+        self._changed(T("已添加载荷", "Load added"))
+    def add_material(self, part_index, kind="linear_elastic"):
         part = self.project.parts[part_index]
         n = len(part.materials) + 1
-        part.materials.append(MaterialDefinition(name=f"Material-{n}", element_set="all"))
+        part.materials.append(MaterialDefinition(name=f"Material-{n}", kind=kind, element_set="all"))
         self._active_tree_data = ("material", part_index, n - 1)
         self._changed(T("已添加材料", "Material added"))
     def _add_set(self, part_index, kind):
@@ -963,10 +1746,12 @@ class Workbench(QWidget):
                 "Cross-Part booleans currently require untransformed instances. Put both geometries in one Part coordinate system first."))
             return
         source_instance_names = {item.name for item in [*instances_a, *instances_b]}
-        if any(item.instance in source_instance_names for item in [*self.project.boundaries, *self.project.loads]):
+        if any(item.instance in source_instance_names for item in [*self.project.boundaries,
+                                                                   *self.project.loads,
+                                                                   *self.project.constraints]):
             QMessageBox.warning(self, T("存在依赖", "Existing dependencies"), T(
-                "源 Part 的 instance 已被边界或载荷使用；请先删除或迁移它们再合并。",
-                "A source Part instance is used by a boundary or load; remove or migrate those first."))
+                "源 Part 的 instance 已被边界、载荷或约束使用；请先删除或迁移它们再合并。",
+                "A source Part instance is used by a boundary, load, or constraint; remove or migrate those first."))
             return
         if any([source_a.node_sets, source_a.element_sets, source_a.surface_sets,
                 source_b.node_sets, source_b.element_sets, source_b.surface_sets]):
@@ -974,9 +1759,10 @@ class Workbench(QWidget):
                 "跨 Part 布尔会改变 OCC 实体编号，当前不能安全迁移源 Part 的节点集、单元集或表面集。请先删除或在合并后重新选择它们。",
                 "A cross-Part boolean changes OCC entity tags, so existing node, element, and surface sets cannot be migrated safely. Remove and recreate them after merging."))
             return
-        material_signature = lambda part: [
-            (item.name, item.kind, item.young, item.poisson, item.mu, item.kappa, item.element_set)
-            for item in part.materials]
+        def material_signature(part):
+            return [(item.name, item.kind, item.young, item.poisson,
+                     item.mu, item.kappa, item.element_set)
+                    for item in part.materials]
         if material_signature(source_a) != material_signature(source_b):
             QMessageBox.warning(self, T("材料不一致", "Material mismatch"), T(
                 "跨 Part 并集不会自动迁移不一致的材料定义，请先统一两个 Part 的材料。",
@@ -989,7 +1775,7 @@ class Workbench(QWidget):
             return
         operations, finals = [], []
         for prefix, source in (("A", source_a), ("B", source_b)):
-            original = source.geometry.ensure_operations()
+            original = source.geometry.operations
             mapping = {operation.id: f"{prefix}_{operation.id}" for operation in original}
             for operation in original:
                 operations.append(CADOperation(mapping[operation.id], operation.kind,
@@ -1015,7 +1801,6 @@ class Workbench(QWidget):
         operations.append(CADOperation(f"{kind.title()}-Merged", kind, {}, finals))
         merged = PartDefinition(name=merged_name,
                                 geometry=type(source_a.geometry)(operations=operations),
-                                young=source_a.young, poisson=source_a.poisson,
                                 materials=copy.deepcopy(source_a.materials),
                                 density=float(source_a.density))
         self.project.parts = [part for part in self.project.parts if part.name not in {object_name, tool_name}]
@@ -1024,10 +1809,8 @@ class Workbench(QWidget):
         for item in self.project.instances:
             if item.part_name == object_name: item.part_name = merged_name
         self._active_tree_data = ("part", len(self.project.parts) - 1)
-        LOGGER.info("cross-Part OCC union created: %s + %s -> %s", object_name, tool_name, merged_name)
         self._changed(T("已创建 Part 并集", "Part union created"))
 
-    def _save_project_label(self, label): self.project.label = label or "untitled"; self._changed(T("模型名称已保存", "Model label saved"))
     def _save_part(self, i, name):
         name = name or f"Part-{i + 1}"
         if any(index != i and item.name == name for index, item in enumerate(self.project.parts)):
@@ -1082,39 +1865,48 @@ class Workbench(QWidget):
         self._active_tree_data = ("materials", part_index)
         self._changed(T("材料已删除", "Material deleted"))
     def _save_feature(self, part_index, feature_id, fields):
-        operation = next(op for op in self.project.parts[part_index].geometry.ensure_operations()
+        operation = next(op for op in self.project.parts[part_index].geometry.operations
                          if op.id == feature_id)
         for key, field in fields.items(): operation.values[key] = field.value()
         self._changed(T("CAD 特征已保存", "CAD feature saved"))
 
-    def _add_primitive(self, part_index):
+    def _add_primitive(self, part_index, kind=None):
         names = ["box", "wedge", "cylinder", "sphere", "cone", "torus"]
-        kind, accepted = QInputDialog.getItem(self, T("添加基本体", "Add primitive"),
-                                               T("Gmsh OCC 类型", "Gmsh OCC type"), names, 0, False)
-        if not accepted: return
-        operations = self.project.parts[part_index].geometry.ensure_operations()
+        if kind is None:
+            kind, accepted = QInputDialog.getItem(self, T("添加基本体", "Add primitive"),
+                                                   T("Gmsh OCC 类型", "Gmsh OCC type"), names, 0, False)
+            if not accepted:
+                return
+        if kind not in names:
+            raise ValueError(f"Unknown primitive kind: {kind}")
+        operations = self.project.parts[part_index].geometry.operations
         identifier = f"{kind.title()}-{sum(op.kind == kind for op in operations) + 1}"
         operations.append(CADOperation(identifier, kind, primitive_defaults(kind)))
         self._active_tree_data = ("feature", part_index, identifier)
         self._changed(T("已添加 OCC 基本体", "OCC primitive added"))
 
-    def _add_boolean(self, part_index):
-        operations = self.project.parts[part_index].geometry.ensure_operations()
+    def _add_boolean(self, part_index, kind=None):
+        operations = self.project.parts[part_index].geometry.operations
         sources = self._live_feature_ids(operations)
         if len(sources) < 2:
             QMessageBox.information(self, T("需要两个特征", "Two features required"),
                                     T("请先添加至少两个基本体。", "Add at least two primitives first."))
             return
-        choices = [
-            (T("并集", "Union"), "fuse"),
-            (T("差集", "Difference"), "cut"),
-            (T("交集", "Intersection"), "intersect"),
-            (T("分割", "Fragment"), "fragment"),
-        ]
-        label, accepted = QInputDialog.getItem(self, T("布尔运算", "Boolean operation"),
-                                                T("类型", "Type"), [item[0] for item in choices], 0, False)
-        if not accepted: return
-        kind = dict(choices)[label]
+        choices = {
+            "fuse": T("并集", "Union"),
+            "cut": T("差集", "Difference"),
+            "intersect": T("交集", "Intersection"),
+            "fragment": T("分割", "Fragment"),
+        }
+        if kind is None:
+            label, accepted = QInputDialog.getItem(
+                self, T("布尔运算", "Boolean operation"), T("类型", "Type"),
+                list(choices.values()), 0, False)
+            if not accepted:
+                return
+            kind = next(value for value, label_value in choices.items() if label_value == label)
+        if kind not in choices:
+            raise ValueError(f"Unknown boolean kind: {kind}")
         first, accepted = QInputDialog.getItem(self, T("布尔运算", "Boolean operation"),
                                                 T("对象", "Object"), sources, 0, False)
         if not accepted: return
@@ -1126,16 +1918,22 @@ class Workbench(QWidget):
         self._active_tree_data = ("feature", part_index, identifier)
         self._changed(T("已添加 OCC 布尔特征", "OCC boolean feature added"))
 
-    def _add_transform(self, part_index):
-        operations = self.project.parts[part_index].geometry.ensure_operations()
+    def _add_transform(self, part_index, kind=None):
+        operations = self.project.parts[part_index].geometry.operations
         sources = self._live_feature_ids(operations)
         if not sources:
             QMessageBox.information(self, T("需要特征", "A feature is required"),
                                     T("请先添加一个基本体或布尔特征。", "Add a primitive or boolean feature first."))
             return
-        kind, accepted = QInputDialog.getItem(self, T("添加 OCC 变换", "Add OCC transform"),
-                                               T("类型", "Type"), ["translate", "rotate", "dilate", "mirror"], 0, False)
-        if not accepted: return
+        transform_kinds = ["translate", "rotate", "dilate", "mirror"]
+        if kind is None:
+            kind, accepted = QInputDialog.getItem(
+                self, T("添加 OCC 变换", "Add OCC transform"), T("类型", "Type"),
+                transform_kinds, 0, False)
+            if not accepted:
+                return
+        if kind not in transform_kinds:
+            raise ValueError(f"Unknown transform kind: {kind}")
         source, accepted = QInputDialog.getItem(self, T("添加 OCC 变换", "Add OCC transform"),
                                                  T("输入特征", "Input feature"), sources, 0, False)
         if not accepted: return
@@ -1151,7 +1949,7 @@ class Workbench(QWidget):
         return [operation.id for operation in operations if operation.id not in consumed]
 
     def _delete_feature(self, part_index, feature_id):
-        operations = self.project.parts[part_index].geometry.ensure_operations()
+        operations = self.project.parts[part_index].geometry.operations
         if len(operations) <= 1:
             QMessageBox.information(
                 self, T("无法删除", "Cannot delete"),
@@ -1208,14 +2006,10 @@ class Workbench(QWidget):
             old_name = part.exterior_surface
             part.exterior_surface = name
             instance_parts = {item.name: item.part_name for item in self.project.instances}
-            retargeted = 0
             for load in self.project.loads:
                 if (load.kind == "pressure" and load.target == old_name
                         and instance_parts.get(load.instance) == part.name):
                     load.target = name
-                    retargeted += 1
-            LOGGER.info("Part exterior surface renamed: part=%s old=%s new=%s pressure_loads_retargeted=%d",
-                        part.name, old_name, name, retargeted)
             self._changed(T("Part 外表面已重命名", "Part exterior surface renamed"))
 
     def _save_instance(self, i, name, part, translation, rotation):
@@ -1228,16 +2022,80 @@ class Workbench(QWidget):
         if any(index != i and item.name == name for index, item in enumerate(self.project.reference_points)):
             QMessageBox.warning(self, T("名称重复", "Duplicate name"), T("参考点名称必须唯一。", "Reference point names must be unique.")); return
         self.project.reference_points[i] = ReferencePointDefinition(name, [w.value() for w in xyz]); self._changed(T("参考点已保存", "Reference point saved"))
-    def _save_boundary(self, i, name, ins, nodes, dofs):
+    def _save_boundary(self, i, name, kind, ins, nodes, reference_point, dofs):
         name = name or f"BC-{i+1}"
         if any(index != i and item.name == name for index, item in enumerate(self.project.boundaries)):
             QMessageBox.warning(self, T("名称重复", "Duplicate name"), T("边界条件名称必须唯一。", "Boundary names must be unique.")); return
-        self.project.boundaries[i] = BoundaryDefinition(name, ins, nodes, [d.currentData() for d in dofs if d.currentData() >= 0]); self._changed(T("边界已保存", "Boundary saved"))
-    def _save_load(self, i, name, kind, ins, target, values):
+        selected_dofs = [d.currentData() for d in dofs if d.currentData() >= 0]
+        if kind == "reference_point":
+            if not reference_point:
+                QMessageBox.warning(self, T("缺少参考点", "Reference point required"),
+                                     T("参考点边界必须指定参考点。", "Select a reference point.")); return
+            self.project.boundaries[i] = BoundaryDefinition(
+                name=name, kind=kind, instance="", reference_point=reference_point,
+                dofs=selected_dofs)
+        else:
+            if not ins or not nodes:
+                QMessageBox.warning(self, T("边界目标无效", "Invalid boundary target"),
+                                     T("节点边界必须指定实例和节点集。", "Select an instance and node set.")); return
+            self.project.boundaries[i] = BoundaryDefinition(
+                name=name, kind=kind, instance=ins, node_set=nodes, dofs=selected_dofs)
+        self._changed(T("边界已保存", "Boundary saved"))
+
+    def _save_constraint(self, i, name, kind, instance, nodes, reference_point):
+        name = name or f"Constraint-{i + 1}"
+        if any(index != i and item.name == name for index, item in enumerate(self.project.constraints)):
+            QMessageBox.warning(self, T("名称重复", "Duplicate name"),
+                                 T("约束名称必须唯一。", "Constraint names must be unique.")); return
+        if kind != "couple":
+            QMessageBox.warning(self, T("约束类型无效", "Invalid constraint type"),
+                                 T("当前只支持耦合约束。", "Only coupling is currently supported.")); return
+        if not instance or not nodes or not reference_point:
+            QMessageBox.warning(
+                self, T("耦合目标无效", "Invalid coupling target"),
+                T("请选择已有的实例、节点集和参考点。",
+                  "Select an existing instance, node set, and reference point.")); return
+        self.project.constraints[i] = ConstraintDefinition(
+            name=name, kind=kind, instance=instance, node_set=nodes,
+            reference_point=reference_point)
+        self._changed(T("约束已保存", "Constraint saved"))
+    @staticmethod
+    def _load_value_defaults(item: LoadDefinition) -> list[float]:
+        defaults = {
+            "pressure": [1.0],
+            "body_force": [0.0, 0.0, -9.81e-6],
+            "concentrated_force": [0.0, 0.0, 0.0],
+            "moment": [0.0, 0.0, 0.0],
+            "spring_rp_rp": [1.0, -1.0],
+            "spring_rp_point": [0.0, 0.0, 0.0, 1.0, -1.0],
+            "penalty_dof": [0.0, 0.0, 1.0e4],
+            "contact_self": [0.5, 1.5, 1.5, 1e-5, 40.0, -0.8, -0.85, 1.5, 0.9, 1.0],
+            "contact": [1e-5, 40.0, -0.4, -0.85, 1.5, 0.9, 1.0],
+        }
+        default_values = defaults[item.kind]
+        values = list(item.values)
+        if not values:
+            values = default_values
+        elif len(values) != len(default_values):
+            raise ValueError(
+                f"Load '{item.name}' has {len(values)} values; "
+                f"expected {len(default_values)}.")
+        return values + [0.0] * (10 - len(values))
+
+    def _save_load(self, i, name, kind, ins, ins2, target, target2, values):
         name = name or f"Load-{i+1}"
         if any(index != i and item.name == name for index, item in enumerate(self.project.loads)):
             QMessageBox.warning(self, T("名称重复", "Duplicate name"), T("载荷名称必须唯一。", "Load names must be unique.")); return
-        self.project.loads[i] = LoadDefinition(name, kind, ins, target, [w.value() for w in values]); self._changed(T("载荷已保存", "Load saved"))
+        count = {
+            "pressure": 1, "body_force": 3, "concentrated_force": 3,
+            "moment": 3, "spring_rp_rp": 2, "spring_rp_point": 5,
+            "penalty_dof": 3, "contact_self": 10, "contact": 7,
+        }[kind]
+        load_values = [w.value() for w in values[:count]]
+        self.project.loads[i] = LoadDefinition(
+            name=name, kind=kind, instance=ins, instance2=ins2,
+            target=target.strip(), target2=target2.strip(), values=load_values)
+        self._changed(T("载荷已保存", "Load saved"))
     def _save_solver(self, maximum, tolerance): self.project.solver_maximum_iteration = maximum; self.project.solver_tolerance = tolerance; self._changed(T("求解器设置已保存", "Solver settings saved"))
     def _delete_set(self, p, kind, i):
         part = self.project.parts[p]
@@ -1253,16 +2111,20 @@ class Workbench(QWidget):
         del collection[i]
         self._changed(T("集合已删除", "Set deleted"))
     def _delete(self, kind, index):
-        table = {"part": self.project.parts, "instance": self.project.instances, "rp": self.project.reference_points, "boundary": self.project.boundaries, "load": self.project.loads}[kind]
+        table = {"part": self.project.parts, "instance": self.project.instances,
+                 "rp": self.project.reference_points, "boundary": self.project.boundaries,
+                 "load": self.project.loads, "constraint": self.project.constraints}[kind]
         if kind == "part":
             if len(table) == 1:
                 QMessageBox.information(self, T("无法删除", "Cannot delete"), T("模型至少需要一个零件。", "A model needs at least one part.")); return
             part_name = table[index].name
             instance_names = {item.name for item in self.project.instances if item.part_name == part_name}
-            if any(item.instance in instance_names for item in [*self.project.boundaries, *self.project.loads]):
+            if any(item.instance in instance_names for item in [*self.project.boundaries,
+                                                               *self.project.loads,
+                                                               *self.project.constraints]):
                 QMessageBox.warning(self, T("存在依赖", "Existing dependencies"), T(
-                    "该零件的实例仍被边界或载荷使用，请先删除或迁移这些定义。",
-                    "An instance of this part is still used by a boundary or load. Remove or migrate those definitions first."))
+                    "该零件的实例仍被边界、载荷或约束使用，请先删除或迁移这些定义。",
+                    "An instance of this part is still used by a boundary, load, or constraint. Remove or migrate those definitions first."))
                 return
             del table[index]
             self.project.instances[:] = [item for item in self.project.instances if item.part_name != part_name]
@@ -1276,50 +2138,55 @@ class Workbench(QWidget):
                     T("模型至少需要一个装配实例。", "A model needs at least one assembly instance."))
                 return
             instance_name = table[index].name
-            if any(item.instance == instance_name for item in [*self.project.boundaries, *self.project.loads]):
+            if any(item.instance == instance_name for item in [*self.project.boundaries,
+                                                               *self.project.loads,
+                                                               *self.project.constraints]):
                 QMessageBox.warning(self, T("存在依赖", "Existing dependencies"), T(
-                    "该实例仍被边界或载荷使用，请先删除或迁移这些定义。",
-                    "This instance is still used by a boundary or load. Remove or migrate those definitions first."))
+                    "该实例仍被边界、载荷或约束使用，请先删除或迁移这些定义。",
+                    "This instance is still used by a boundary, load, or constraint. Remove or migrate those definitions first."))
                 return
             self._active_tree_data = ("project", None)
         if kind == "rp":
             rp_name = table[index].name
-            if any(item.kind == "concentrated_force" and item.target == rp_name for item in self.project.loads):
+            if any((item.kind in {"concentrated_force", "moment", "spring_rp_point", "spring_rp_rp"}
+                    and (item.target == rp_name or item.target2 == rp_name))
+                   for item in self.project.loads):
                 QMessageBox.warning(self, T("存在依赖", "Existing dependencies"), T(
-                    "该参考点仍被集中力使用，请先删除或迁移该载荷。",
-                    "This reference point is still used by a concentrated force. Remove or migrate that load first."))
+                    "该参考点仍被载荷使用，请先删除或迁移相关载荷。",
+                    "This reference point is still used by a load. Remove or migrate that load first."))
                 return
+            if any(item.reference_point == rp_name for item in [*self.project.boundaries,
+                                                                  *self.project.constraints]):
+                QMessageBox.warning(self, T("存在依赖", "Existing dependencies"), T(
+                    "该参考点仍被边界或约束使用，请先删除或迁移它们。",
+                    "This reference point is still used by a boundary or constraint.")); return
         del table[index]; self._changed(T("对象已删除", "Object deleted"))
     def _changed(self, message):
+        # Every successful Apply/add/delete operation is now the new clean
+        # state of the editor.  A failed validation leaves the flag intact so
+        # the user is still warned before navigating away.
+        self._editor_dirty = False
+        if self._push_history():
+            self._definition_revision += 1
         self._invalidate_mesh_cache()
-        self._push_history()
         self.message.setText(message)
         self.reload()
-        self.changed.emit()
         self.notify.emit(message)
         self._preview_timer.start()
 
     def _record_live_edit(self, message):
         """Commit an already-previewed field change without rebuilding Qt UI."""
-        previous_index = self._history_index
-        self._push_history()
-        if self._history_index != previous_index:
+        if self._push_history():
+            self._definition_revision += 1
             self._invalidate_mesh_cache()
             self.message.setText(message)
-            self.changed.emit()
             self.notify.emit(message)
 
     def _refresh_preview_automatically(self):
         self.refresh_preview(silent=True)
 
-    def _show_log_path(self):
-        QMessageBox.information(self, T("CAE 日志", "CAE log"),
-                                T(f"详细日志文件：\n{log_path()}", f"Detailed log file:\n{log_path()}"))
-
     def refresh_preview(self, silent=False):
         try:
-            LOGGER.info("UI BREP refresh start: parts=%d instances=%d silent=%s",
-                        len(self.project.parts), len(self.project.instances), silent)
             self.message.setText(T("更新 BREP…", "Updating BREP…"))
             if not self.project.instances:
                 raise ValueError("CAE project needs at least one assembly instance.")
@@ -1332,7 +2199,17 @@ class Workbench(QWidget):
             records = []
             part_records = {}
             for part in self.project.parts:
-                base = preview_brep(part.geometry.ensure_operations())
+                if part.geometry.source.casefold() == "discrete":
+                    native_part = part.geometry.runtime_part
+                    if native_part is None and part.geometry.discrete_data is not None:
+                        from torchfea.interfaces import Serializable
+                        native_part = Serializable._deserialize(part.geometry.discrete_data)
+                        part.geometry.runtime_part = native_part
+                    if native_part is None:
+                        raise ValueError(f"Discrete Part '{part.name}' has no native mesh.")
+                    base = preview_discrete_part(native_part)
+                else:
+                    base = preview_brep(part.geometry.operations)
                 # Part Geometry is also a selectable view.  Keep ownership
                 # metadata on its records, just as on assembly instances;
                 # otherwise a correctly picked face is rejected because its
@@ -1350,16 +2227,14 @@ class Workbench(QWidget):
                         record["part_name"] = part.name
                         record["instance_name"] = instance.name
                         records.append(record)
-            # Publish only a complete refresh.  A failure in Part N must not
-            # leave Part 1's new records mixed with an older assembly view.
+            # Publish only a complete refresh so failed previews never leave
+            # stale geometry in the viewport.
             self._brep_part_records = part_records
             self._brep_assembly_records = records
             self._update_view_tabs()
             self._render_current_view()
             self.message.setText(T("BREP 已更新", "BREP updated"))
-            LOGGER.info("UI BREP refresh complete: records=%d", len(records))
         except Exception as exc:
-            LOGGER.exception("UI BREP refresh failed")
             self._brep_part_records = {}
             self._brep_assembly_records = []
             self._preview_highlight = None
@@ -1375,27 +2250,22 @@ class Workbench(QWidget):
         # succeeds, but do not keep an old analysis mesh visible on failure.
         self._invalidate_mesh_cache(clear_brep=False)
         try:
-            LOGGER.info("UI FE mesh requested: mesh_size=%r (%s)", self.project.mesh_size,
-                        type(self.project.mesh_size).__name__)
             self.message.setText(T("生成 FE 网格…", "Generating FE mesh…"))
-            self._preview_controller = build_controller(self.project)
-            self._assembly_mesh_controller = self._preview_controller
-            self._mesh_parts = dict(self._preview_controller.assembly._parts)
+            controller = build_controller(self.project)
+            self._assembly_mesh_controller = controller
+            self._mesh_parts = dict(controller.assembly._parts)
             self._update_view_tabs()
             self.view_tabs.setCurrentIndex(3)
             self._render_current_view()
             self.message.setText(T("FE 网格已生成", "FE mesh generated"))
-            LOGGER.info("UI FE mesh complete")
         except Exception as exc:
-            LOGGER.exception("UI FE mesh failed")
             if self._view_mode in {"part_mesh", "assembly_mesh"}:
                 self.preview.clear_scene()
             else:
                 self._render_current_view()
             self._update_view_tabs()
             self.message.setText(T("剖分失败：", "Meshing failed: ") + str(exc))
-            detail = T(f"{exc}\n\n详细日志：{log_path()}", f"{exc}\n\nDetailed log: {log_path()}")
-            QMessageBox.warning(self, T("剖分失败", "Meshing failed"), detail)
+            QMessageBox.warning(self, T("剖分失败", "Meshing failed"), str(exc))
 
     @staticmethod
     def _transform_points(points, translation, rotation):
@@ -1418,19 +2288,22 @@ class Workbench(QWidget):
             self.project.mesh_size = value
             self._changed(T("统一网格尺寸已保存", "Global mesh size saved"))
 
-    def _push_history(self) -> None:
+    def _push_history(self) -> bool:
         project_state = self.project.to_dict()
         if project_state == self._history[self._history_index]:
-            return
+            return False
         self._history = self._history[:self._history_index + 1]
         self._history.append(project_state)
         self._history_index += 1
+        return True
 
     def undo(self) -> None:
         if self._history_index == 0:
             return
         self._history_index -= 1
         self.project = CAEProject.from_dict(self._history[self._history_index])
+        self._editor_dirty = False
+        self._definition_revision += 1
         self._invalidate_mesh_cache()
         self.mesh_size.setValue(self.project.mesh_size)
         self.message.setText(T("已撤回 CAD/模型操作", "CAD/model operation undone"))
@@ -1442,6 +2315,8 @@ class Workbench(QWidget):
             return
         self._history_index += 1
         self.project = CAEProject.from_dict(self._history[self._history_index])
+        self._editor_dirty = False
+        self._definition_revision += 1
         self._invalidate_mesh_cache()
         self.mesh_size.setValue(self.project.mesh_size)
         self.message.setText(T("已重做 CAD/模型操作", "CAD/model operation redone"))
@@ -1450,6 +2325,12 @@ class Workbench(QWidget):
 
     # --------------------------------------------------------- view picking
     def _begin_preview_pick(self, part_index: int, kind: str, item_index: int) -> None:
+        if self.project.parts[part_index].geometry.source.casefold() == "discrete":
+            self._pick_target = None
+            self.message.setText(T(
+                "离散几何不能进行 CAD 拾取，请直接编辑集合。",
+                "Discrete geometry has no CAD picking; edit the set directly."))
+            return
         self._pick_target = (part_index, kind, item_index)
         mode = {"node_sets": "node", "element_sets": "body", "surface_sets": "face"}[kind]
         # Set definitions belong to one Part.  Use its isolated BREP view so
@@ -1460,11 +2341,16 @@ class Workbench(QWidget):
         self.message.setText(T("选择模式：点击预览实体", "Selection mode: pick an entity"))
 
     def _picked_entity(self, entity: dict) -> None:
-        LOGGER.debug("viewport entity picked: %s", entity)
         if self._pick_target is None:
             return
         part_index, kind, item_index = self._pick_target
         definition = self.project.parts[part_index]
+        if definition.geometry.source.casefold() == "discrete":
+            self.message.setText(T(
+                "离散几何不能进行 CAD 拾取。",
+                "Discrete geometry cannot be picked as CAD."))
+            self._pick_target = None
+            return
         if entity.get("part_name") != definition.name:
             self.message.setText(T("请选择当前集合所属零件上的实体。", "Pick an entity on the part that owns this set."))
             return
@@ -1525,8 +2411,7 @@ class Workbench(QWidget):
 
     @staticmethod
     def _format_surface(surface) -> str:
-        # The existing surface text grammar is element:side.  Keeping it
-        # explicit makes the result editable and compatible with parse_faces.
+        # Keep the element:side grammar explicit for editing.
         surface_tokens = []
         for element_ids, side in surface:
             surface_tokens.extend(
@@ -1537,6 +2422,97 @@ class Workbench(QWidget):
     def _instance_combo(self, current: str) -> QComboBox:
         combo_box = QComboBox()
         combo_box.addItems([instance.name for instance in self.project.instances])
+        combo_box.setCurrentText(current)
+        return combo_box
+
+    def _part_for_instance(self, instance_name: str) -> PartDefinition | None:
+        instance = next((item for item in self.project.instances
+                         if item.name == instance_name), None)
+        if instance is None:
+            return None
+        return next((part for part in self.project.parts
+                     if part.name == instance.part_name), None)
+
+    def _node_set_names(self, instance_name: str) -> list[str]:
+        """Return every node set available through an assembly instance."""
+        part = self._part_for_instance(instance_name)
+        if part is None:
+            return []
+        names = ["all", "surface_all"]
+        names.extend(surface_node_set_name(item.name) for item in part.surface_sets)
+        names.extend(item.name for item in part.node_sets)
+        return list(dict.fromkeys(names))
+
+    def _element_set_names(self, instance_name: str) -> list[str]:
+        part = self._part_for_instance(instance_name)
+        if part is None:
+            return []
+        return list(dict.fromkeys(["all", *(item.name for item in part.element_sets)]))
+
+    def _surface_names(self, instance_name: str) -> list[str]:
+        part = self._part_for_instance(instance_name)
+        if part is None:
+            return []
+        return list(dict.fromkeys([
+            str(part.exterior_surface),
+            *(item.name for item in part.surface_sets),
+        ]))
+
+    def _node_set_combo(self, instance_name: str, current: str) -> QComboBox:
+        combo_box = QComboBox()
+        self._replace_combo_items(combo_box, self._node_set_names(instance_name), current)
+        return combo_box
+
+    @staticmethod
+    def _replace_combo_items(combo_box: QComboBox, values: list[str], current: str = "") -> None:
+        """Replace a reference combo without allowing arbitrary text."""
+        current = str(current or "")
+        combo_box.blockSignals(True)
+        combo_box.clear()
+        combo_box.addItems([str(value) for value in values])
+        if current in values:
+            combo_box.setCurrentText(current)
+        elif combo_box.count():
+            combo_box.setCurrentIndex(0)
+        combo_box.blockSignals(False)
+
+    def _penalty_target_names(self, object_type: str) -> list[str]:
+        maps = {
+            "instance": [item.name for item in self.project.instances],
+            "rp": [item.name for item in self.project.reference_points],
+            "load": [item.name for item in self.project.loads],
+            "constraint": [item.name for item in self.project.constraints],
+            "boundary": [item.name for item in self.project.boundaries],
+        }
+        if object_type == "auto":
+            values = [value for names in maps.values() for value in names]
+        else:
+            values = maps.get(object_type, [])
+        return list(dict.fromkeys(values))
+
+    def _load_target_names(self, kind: str, instance_name: str,
+                           instance2_name: str, second: bool,
+                           object_type: str = "auto") -> list[str]:
+        """Return valid target names for one load type and target position."""
+        if kind in {"pressure", "contact_self"}:
+            return self._surface_names(instance_name)
+        if kind == "body_force":
+            return ["C3D4"]
+        if kind in {"concentrated_force", "moment", "spring_rp_point"}:
+            return [point.name for point in self.project.reference_points]
+        if kind == "spring_rp_rp":
+            return [point.name for point in self.project.reference_points]
+        if kind == "penalty_dof":
+            if second:
+                return ["auto", "instance", "rp", "load", "constraint", "boundary"]
+            return self._penalty_target_names(object_type)
+        if kind == "contact":
+            return self._surface_names(instance2_name if second else instance_name)
+        return []
+
+    def _reference_point_combo(self, current: str) -> QComboBox:
+        combo_box = QComboBox()
+        combo_box.addItems([point.name for point in self.project.reference_points])
         combo_box.setCurrentText(current)
         return combo_box
 
@@ -1563,4 +2539,16 @@ class Workbench(QWidget):
         layout = QHBoxLayout(row_widget)
         layout.setContentsMargins(0, 0, 0, 0)
         for widget in widgets: layout.addWidget(widget)
+        return row_widget
+
+    @staticmethod
+    def _value_grid(widgets) -> QWidget:
+        """Compact two-row numeric editor used by multi-parameter loads."""
+        row_widget = QWidget()
+        layout = QGridLayout(row_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(4)
+        layout.setVerticalSpacing(4)
+        for index, widget in enumerate(widgets):
+            layout.addWidget(widget, index // 5, index % 5)
         return row_widget

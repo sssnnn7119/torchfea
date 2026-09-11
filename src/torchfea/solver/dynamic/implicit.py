@@ -12,6 +12,11 @@ from .result import DynamicResult
 
 class DynamicImplicitSolver(BaseSolver):
 
+    _serialized_attributes_exclude = [
+        '_DynamicImplicitSolver__low_alpha_count', '_GC_list', '_GV_list',
+        '_GA_list', '_time_list', '_deltaT_list',
+    ]
+
     def __init__(self, maximum_iteration: int = 10000, deltaT: float = 1e-2, time_end: float = 1.0, tol_error: float = 1e-5) -> None:
         """
         Initialize the FEA class.
@@ -537,4 +542,3 @@ class DynamicImplicitSolver(BaseSolver):
         return result
 
     # endregion
-

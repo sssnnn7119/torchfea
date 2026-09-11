@@ -13,3 +13,7 @@ dependencies = [
     "gmsh>=4.15.0",
     "pyside6>=6.8.0",
 ]
+
+[project.gui-scripts]
+# GUI entry point (available as `torchfea-ui` after installing torchfea).
+torchfea-ui = "torchfea.ui:run_app"

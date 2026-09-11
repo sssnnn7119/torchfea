@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 class StaticImplicitSolver(BaseSolver):
 
+    _serialized_attributes_exclude = ['_StaticImplicitSolver__low_alpha_count']
+
     def __init__(self, maximum_iteration: int = 10000, tol_error: float = 1e-5) -> None:
         """
         Initialize the FEA class.
@@ -627,6 +629,8 @@ class StaticImplicitSolver(BaseSolver):
         low_alpha = 0
         alpha = 0
 
+        self.__low_alpha_count = 0
+
         # begin the iteration
         while True:
 
@@ -790,4 +794,3 @@ class StaticImplicitSolver(BaseSolver):
         return result
 
     # endregion
-

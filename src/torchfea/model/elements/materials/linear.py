@@ -110,8 +110,8 @@ class LinearElastic(Materials_Base):
         """
         Constitutive response for the ``Element_3D`` total-Lagrangian form.
 
-        The extra keyword arguments are accepted for compatibility with the
-        hyperelastic material interface used by ``Element_3D``.  The
+        The extra keyword arguments match the hyperelastic material interface
+        used by ``Element_3D``.  The
         Saint-Venant--Kirchhoff formulation only needs ``F`` and computes its
         own right Cauchy--Green tensor.
 

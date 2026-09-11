@@ -22,5 +22,3 @@ class ReferencePoint(BaseObj):
             node = torch.tensor(node.tolist())
         self.node = node
         self._RGC_requirements = 6
-
-        

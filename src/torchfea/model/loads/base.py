@@ -15,6 +15,10 @@ from ..obj_base import BaseObj
 
 class BaseLoad(BaseObj):
 
+    _serialized_attributes_exclude = [
+        '_indices_matrix', '_indices_force', '_index_matrix_coalesce',
+    ]
+
     def __init__(self) -> None:
         super().__init__()
         self._indices_matrix: torch.Tensor = torch.zeros([2, 0],

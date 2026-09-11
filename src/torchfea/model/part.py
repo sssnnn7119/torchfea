@@ -20,7 +20,7 @@ class _Surfaces(Serializable):
     Class representing a set of surfaces in the finite element model.
     """
 
-    _serialized_attributes_exclude = ['_surface_elements']
+    _serialized_attributes_exclude = ['_surface_elements', '_initialized']
 
     def __init__(self):
         self._surface_dict: dict[str, list[tuple[np.ndarray, int]]] = {}
@@ -119,6 +119,10 @@ class _Surfaces(Serializable):
 
 
 class Part(Serializable):
+
+    _serialized_attributes_exclude = [
+        'mass_matrix_indices', 'mass_matrix_values', 'mid_pt_idxmap_torch',
+    ]
 
 
 

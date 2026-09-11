@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import pypardiso
 
@@ -20,7 +20,10 @@ class StaticResult(BaseResult):
     The result of a static finite element analysis (FEA) simulation.
     """
 
-    def __init__(self, GC: torch.Tensor, work_conditions: WorkCondition, jacobian: dict[str, torch.Tensor] = None, total_time: float = 0.0, time_items: dict[str, list[float]] = None, converged: bool = True):
+    def __init__(self, GC: torch.Tensor, work_conditions: WorkCondition,
+                 jacobian: dict[str, torch.Tensor] = None, total_time: float = 0.0,
+                 time_items: dict[str, list[float]] = None, converged: bool = True,
+                 model_hash: str | None = None):
         super().__init__()
         self.GC = GC.detach().clone()
         """ 
@@ -29,6 +32,9 @@ class StaticResult(BaseResult):
 
         self.converged: bool = converged
         """Indicates whether the static solver converged."""
+
+        self.model_hash: str | None = model_hash
+        """Identity of the model used to produce this result."""
 
         if jacobian is None:
             jacobian = {}
@@ -114,11 +120,20 @@ class StaticResult(BaseResult):
         Args:
             path (str): The path to the file where the result will be saved.
         """
-        # Implementation for saving static FEA results goes here
-        
-        serialized_work_conditions = self.work_conditions._serialize()
+        if not self.model_hash:
+            raise ValueError("Cannot save a result without a model hash.")
+        serialized_work_conditions = np.empty((), dtype=object)
+        serialized_work_conditions[()] = self.work_conditions._serialize()
 
-        np.savez_compressed(file=path, GC=self.GC.cpu().numpy(), work_conditions=serialized_work_conditions, total_time=self.total_time, time_items=self.time_items)
+        np.savez_compressed(
+            file=path,
+            GC=self.GC.cpu().numpy(),
+            work_conditions=serialized_work_conditions,
+            total_time=self.total_time,
+            time_items=self.time_items,
+            converged=self.converged,
+            model_hash=self.model_hash,
+        )
     
     @classmethod
     def load(cls, path: str) -> "StaticResult":
@@ -128,13 +143,18 @@ class StaticResult(BaseResult):
         Args:
             path (str): The path to the file from which the result will be loaded.
         """
-        # Implementation for loading static FEA results goes here
-        data = np.load(path, allow_pickle=True)
-        GC = torch.tensor(data['GC'])
-        total_time = float(data.get('total_time', 0.0))
-        time_items = data.get('time_items', {}).item() if 'time_items' in data else {}
-        serialized_work_conditions = data['work_conditions'] if 'work_conditions' in data else None
+        with np.load(path, allow_pickle=True) as data:
+            GC = torch.tensor(data['GC'])
+            total_time = float(data['total_time'])
+            time_items = data['time_items'].item()
+            converged = bool(np.asarray(data['converged']).reshape(-1)[0])
+            model_hash = str(np.asarray(data['model_hash']).reshape(-1)[0])
+            serialized_work_conditions = data['work_conditions'].item()
 
-        work_conditions = WorkCondition._deserialize(serialized_work_conditions) if serialized_work_conditions is not None else None
+        work_conditions = (
+            WorkCondition._deserialize(serialized_work_conditions)
+            if serialized_work_conditions is not None else None
+        )
 
-        return cls(GC=GC, work_conditions=work_conditions, total_time=total_time, time_items=time_items)
+        return cls(GC=GC, work_conditions=work_conditions, total_time=total_time,
+                   time_items=time_items, converged=converged, model_hash=model_hash)

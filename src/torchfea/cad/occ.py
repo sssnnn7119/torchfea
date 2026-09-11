@@ -7,25 +7,55 @@ The workbench has two deliberately separate paths:
 * :func:`create_part` applies one global mesh size, creates the final C3D4
   volume mesh, and maps Gmsh surface/volume entities back to torchfea sets.
 
-No function in this module calls ``torchfea.model.cad``.
+The UI calls this kernel module; no UI code is required to replay OCC history.
 """
 
 from __future__ import annotations
 
+import base64
 from collections import defaultdict
+import logging
 import os
 import tempfile
+import threading
 from typing import Iterable
 
 import numpy as np
 import torch
 
-from .logging_utils import LOGGER
+from .history import CADHistory, CADOperation
+
+LOGGER = logging.getLogger("torchfea.cae")
 
 
 _PRIMITIVES = {"box", "wedge", "cylinder", "sphere", "cone", "torus"}
 _BOOLEANS = {"fuse", "cut", "intersect", "fragment"}
 _TRANSFORMS = {"translate", "rotate", "dilate", "mirror"}
+_GMSH_LOCK = threading.RLock()
+
+
+def step_file_values(path: str) -> dict[str, str]:
+    """Read a STEP file into serializable CAD-operation values."""
+    source_path = os.fspath(path)
+    if not source_path:
+        raise ValueError("STEP import path cannot be empty.")
+    try:
+        with open(source_path, "rb") as source:
+            content = source.read()
+    except OSError as exc:
+        raise ValueError(f"Cannot read STEP file '{source_path}': {exc}") from exc
+    if not content:
+        raise ValueError(f"STEP file '{source_path}' is empty.")
+    return {
+        "data": base64.b64encode(content).decode("ascii"),
+        "filename": os.path.basename(source_path),
+    }
+
+
+def _operation_list(source: Iterable[CADOperation] | CADHistory) -> list[CADOperation]:
+    if isinstance(source, CADHistory):
+        return list(source.operations)
+    return list(source)
 
 
 def primitive_defaults(kind: str) -> dict[str, float]:
@@ -53,7 +83,7 @@ def transform_defaults(kind: str) -> dict[str, float]:
     return dict(defaults[kind])
 
 
-def preview_brep(operations: Iterable) -> list[dict]:
+def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
     """Return face-wise display geometry for the final native OCC solid.
 
     Temporary two-dimensional Gmsh triangles are visualization tessellation,
@@ -62,18 +92,28 @@ def preview_brep(operations: Iterable) -> list[dict]:
     """
     import gmsh
 
-    operations = list(operations)
+    operations = _operation_list(operations)
     LOGGER.info("BREP preview start: operations=%d kinds=%s", len(operations),
-                [getattr(operation, "kind", "?") for operation in operations])
+                [operation.kind for operation in operations])
 
-    gmsh.initialize()
+    _GMSH_LOCK.acquire()
+    try:
+        # Gmsh's default interrupt handler registration uses signal.signal(),
+        # which Python only permits in the main thread.  BREP previews can be
+        # requested from the Qt thread, while FE generation runs in the solve
+        # worker, so disable that optional handler and serialize the global
+        # Gmsh API between the two paths.
+        gmsh.initialize(interruptible=False)
+    except Exception:
+        _GMSH_LOCK.release()
+        raise
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear(); gmsh.model.add("torchfea_brep_preview")
         volumes = _build_occ(gmsh, operations)
         LOGGER.debug("BREP OCC history built: final_volumes=%s", volumes)
         _set_preview_size(gmsh, volumes)
-        volumes = _mesh_with_topology_retry(gmsh, volumes, 2)
+        gmsh.model.mesh.generate(2)
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
         points, local = _local_nodes(node_tags, node_coords)
         vertex_tags, vertex_points = _occ_vertices(gmsh)
@@ -102,22 +142,120 @@ def preview_brep(operations: Iterable) -> list[dict]:
         LOGGER.exception("BREP preview failed")
         raise
     finally:
-        gmsh.finalize()
+        try:
+            gmsh.finalize()
+        finally:
+            _GMSH_LOCK.release()
 
 
-def create_part(operations: Iterable, mesh_size: float):
+def preview_discrete_part(part) -> list[dict]:
+    """Return display faces for an already-meshed native Part.
+
+    A discrete Part has no OCC topology to tessellate. Its boundary element
+    faces are therefore used directly as the viewport surface. The records
+    carry ``discrete=True`` so the UI never treats them as CAD faces.
+    """
+    points = part.nodes.detach().cpu().numpy()
+    records: list[dict] = []
+    surface_tag = 0
+    for element_name, element in part.elems.items():
+        extractor = element.extract_boundary_surface_set
+        face_map = element.surfaceid_map
+        for element_ids, side in extractor():
+            ids = np.asarray(element_ids, dtype=int).reshape(-1)
+            if not len(ids):
+                continue
+            local_nodes = face_map[int(side)]
+            face_nodes = element._elems[ids][:, local_nodes].detach().cpu().numpy()
+            if face_nodes.shape[1] == 3:
+                triangles = face_nodes
+            elif face_nodes.shape[1] > 3:
+                triangles = np.concatenate([
+                    np.column_stack((face_nodes[:, 0], face_nodes[:, index],
+                                     face_nodes[:, index + 1]))
+                    for index in range(1, face_nodes.shape[1] - 1)
+                ], axis=0)
+            else:
+                raise ValueError(f"Element block '{element_name}' contains a degenerate boundary face.")
+            edges = np.concatenate((triangles[:, [0, 1]], triangles[:, [1, 2]],
+                                    triangles[:, [2, 0]]), axis=0)
+            edges = np.unique(np.sort(edges, axis=1), axis=0)
+            records.append({
+                "points": points,
+                "triangles": triangles,
+                "surface_tag": surface_tag,
+                "volume_tags": [],
+                "edge_lines": [{"edge_tag": surface_tag, "lines": edges}],
+                "vertex_tags": [],
+                "vertex_points": np.empty((0, 3), dtype=float),
+                "surface_name": str(part.exterior_surface),
+                "discrete": True,
+            })
+            surface_tag += 1
+    if not records:
+        raise RuntimeError("Discrete Part has no supported boundary faces to display.")
+    LOGGER.info("discrete preview complete: faces=%d display_nodes=%d", len(records), len(points))
+    return records
+
+
+def export_step(operations: Iterable[CADOperation] | CADHistory, path: str) -> None:
+    """Replay a Part's OCC history and export its final solids as STEP.
+
+    STEP export intentionally does not call ``mesh.generate``: the file is a
+    CAD/BREP artifact and is independent of the FE mesh size.
+    """
+    import gmsh
+
+    output_path = os.fspath(path)
+    if not output_path:
+        raise ValueError("STEP export path cannot be empty.")
+    operations = _operation_list(operations)
+    LOGGER.info("STEP export start: path=%s operations=%d", output_path, len(operations))
+
+    _GMSH_LOCK.acquire()
+    try:
+        gmsh.initialize(interruptible=False)
+    except Exception:
+        _GMSH_LOCK.release()
+        raise
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("torchfea_step_export")
+        volumes = _build_occ(gmsh, operations)
+        if not volumes:
+            raise RuntimeError("Part has no final OCC volume to export.")
+        gmsh.write(output_path)
+        LOGGER.info("STEP export complete: path=%s volumes=%s", output_path, volumes)
+    except Exception:
+        LOGGER.exception("STEP export failed: path=%s", output_path)
+        raise
+    finally:
+        try:
+            gmsh.finalize()
+        finally:
+            _GMSH_LOCK.release()
+
+
+def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: float):
     """Mesh final OCC volumes once and adapt them to a C3D4 torchfea Part."""
     import gmsh
 
-    from torchfea.model import Part
-    from torchfea.model.elements import initialize_element
+    from ..model.part import Part
+    from ..model.elements import initialize_element
 
-    operations = list(operations)
+    operations = _operation_list(operations)
     mesh_size = float(mesh_size)
     LOGGER.info("FE mesh start: operations=%d mesh_size=%r (%s)", len(operations), mesh_size, type(mesh_size).__name__)
     if mesh_size <= 0:
         raise ValueError("Global mesh size must be positive.")
-    gmsh.initialize()
+    _GMSH_LOCK.acquire()
+    try:
+        # See preview_brep(): this call may run in the Qt solve worker.
+        gmsh.initialize(interruptible=False)
+    except Exception:
+        _GMSH_LOCK.release()
+        raise
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear(); gmsh.model.add("torchfea_analysis_mesh")
@@ -126,7 +264,7 @@ def create_part(operations: Iterable, mesh_size: float):
         gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
         LOGGER.debug("Gmsh 3D mesh.generate(3) begin")
-        volumes = _mesh_with_topology_retry(gmsh, volumes, 3)
+        gmsh.model.mesh.generate(3)
         LOGGER.debug("Gmsh 3D mesh.generate(3) complete")
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
         points, local = _local_nodes(node_tags, node_coords)
@@ -143,7 +281,10 @@ def create_part(operations: Iterable, mesh_size: float):
         LOGGER.exception("FE mesh failed inside Gmsh/OCC stage")
         raise
     finally:
-        gmsh.finalize()
+        try:
+            gmsh.finalize()
+        finally:
+            _GMSH_LOCK.release()
 
     LOGGER.info("FE mesh raw result: nodes=%d C3D4=%d volumes=%d surfaces=%d",
                 len(points), len(connectivity), len(volume_elements), len(surface_triangles))
@@ -210,7 +351,7 @@ def _build_occ(gmsh, operations: Iterable) -> list[int]:
     alive: list[tuple[int, int]] = []
     for operation in operations:
         kind, values, op_id = operation.kind, operation.values, str(operation.id).strip()
-        inputs = list(operation.inputs or [])
+        inputs = list(operation.inputs)
         if not op_id:
             raise ValueError("Every OCC feature needs a non-empty id.")
         if op_id in seen:
@@ -231,6 +372,35 @@ def _build_occ(gmsh, operations: Iterable) -> list[int]:
             if inputs:
                 raise ValueError(f"Primitive feature '{op_id}' cannot have inputs.")
             output = [(3, _add_primitive(occ, kind, values))]
+            alive.extend(output)
+        elif kind == "step_import":
+            if inputs:
+                raise ValueError(f"STEP import feature '{op_id}' cannot have inputs.")
+            encoded = values["data"]
+            if not isinstance(encoded, str) or not encoded:
+                raise ValueError(f"STEP import feature '{op_id}' has no embedded file data.")
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"STEP import feature '{op_id}' contains invalid file data.") from exc
+            temporary_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                        prefix="torchfea_step_", suffix=".step", delete=False) as handle:
+                    temporary_path = handle.name
+                    handle.write(content)
+                imported = occ.importShapes(temporary_path)
+                occ.synchronize()
+            finally:
+                if temporary_path:
+                    try:
+                        os.unlink(temporary_path)
+                    except OSError as exc:
+                        LOGGER.warning("could not remove temporary STEP import %s: %s",
+                                       temporary_path, exc)
+            output = [entity for entity in imported if int(entity[0]) == 3]
+            if not output:
+                raise ValueError(f"STEP import feature '{op_id}' contains no solid volume.")
             alive.extend(output)
         elif kind in _BOOLEANS:
             if len(inputs) != 2:
@@ -442,51 +612,3 @@ def _set_preview_size(gmsh, volumes: list[int]) -> None:
     size = max(extent / 28.0, 1e-3)
     gmsh.option.setNumber("Mesh.MeshSizeMin", size)
     gmsh.option.setNumber("Mesh.MeshSizeMax", size)
-
-
-def _mesh_with_topology_retry(gmsh, volumes: list[int], dimension: int) -> list[int]:
-    """Generate a mesh, retrying through a topology-preserving STEP import.
-
-    Some curved OCC booleans (notably a torus intersecting a box face) leave
-    duplicate seam edges.  ``occ.healShapes()`` can repair the wire, but it
-    may also reverse/remove a valid portion of a fused solid (turning a union
-    into a difference).  A STEP export/import lets OpenCASCADE rebuild the
-    topology while preserving the solid mass and boolean semantics.
-    """
-    try:
-        gmsh.model.mesh.generate(int(dimension))
-        return volumes
-    except Exception as exc:
-        if "closed loop" not in str(exc).lower():
-            raise
-        LOGGER.warning("Gmsh %d-D mesh hit an open OCC wire; rebuilding topology via STEP", dimension)
-        source_mass = sum(float(gmsh.model.occ.getMass(3, int(tag))) for tag in volumes)
-        gmsh.model.mesh.clear()
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix="torchfea_occ_", suffix=".step", delete=False) as handle:
-                temp_path = handle.name
-            gmsh.write(temp_path)
-            gmsh.clear()
-            gmsh.model.add("torchfea_occ_step_retry")
-            imported = gmsh.model.occ.importShapes(temp_path)
-            gmsh.model.occ.synchronize()
-            retry_volumes = [int(tag) for dim, tag in imported if int(dim) == 3]
-            if not retry_volumes:
-                retry_volumes = [int(tag) for dim, tag in gmsh.model.getEntities(3)]
-            if not retry_volumes:
-                raise RuntimeError("STEP topology rebuild produced no OCC volume.")
-            retry_mass = sum(float(gmsh.model.occ.getMass(3, tag)) for tag in retry_volumes)
-            if source_mass and abs(retry_mass - source_mass) > max(1e-7, abs(source_mass) * 1e-7):
-                raise RuntimeError(
-                    f"STEP topology rebuild changed OCC volume ({source_mass:g} -> {retry_mass:g}).")
-            gmsh.model.mesh.generate(int(dimension))
-            LOGGER.info("OCC STEP topology retry succeeded: dimension=%d volumes=%s mass=%g",
-                        dimension, retry_volumes, retry_mass)
-            return retry_volumes
-        finally:
-            if temp_path:
-                try:
-                    os.unlink(temp_path)
-                except OSError as exc:
-                    LOGGER.warning("could not remove temporary OCC STEP file %s: %s", temp_path, exc)

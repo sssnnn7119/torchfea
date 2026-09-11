@@ -1,13 +1,15 @@
 
-from math import e
-
 import numpy as np
 import torch
 from .model import Assembly
+from .cad import CADModel
 from .solver import BaseSolver
 from .interfaces import Serializable
+from .model_hash import controller_model_hash
 
 class FEAController(Serializable):
+
+    _serialized_attributes_exclude = ['_model_hash']
 
     def __init__(self, maximum_iteration: int = 10000) -> None:
         """
@@ -20,8 +22,14 @@ class FEAController(Serializable):
         self.assembly: Assembly = None
         """The assembly containing instances, elements, and reference points."""
 
+        self.cad: CADModel = CADModel()
+        """Discrete CAD construction histories used to build the assembly."""
+
         self.solver: BaseSolver = None
         """The solver used for finite element analysis."""
+
+        self._model_hash: str | None = None
+        """Stable identity of the persistent model definition."""
 
     def initialize(self, *args, **kwargs):
         """
@@ -47,14 +55,33 @@ class FEAController(Serializable):
         Returns:
             bool: True if the solution converged, False otherwise.
         """
+        # Capture the identity before initialization creates solver caches.
+        # The result must remain paired with the persistent model definition,
+        # not with those transient arrays.
+        model_hash = self.get_model_hash()
         if if_initialize:
             self.initialize()
         else:
             self.assembly.define_required_DoFs()
 
-            
         result = self.solver.solve(GC0=GC0, *args, **kwargs)
+        result.model_hash = model_hash
         return result
+
+    def get_model_hash(self) -> str:
+        """Compute the current identity of this model definition.
+
+        Hashing is intentionally explicit and uncached.  Callers should use
+        it at model solve, persistence, or result-validation boundaries rather
+        than from frequently refreshed UI state.
+        """
+        self._model_hash = controller_model_hash(self)
+        return self._model_hash
+
+    @property
+    def model_hash(self) -> str:
+        """Public model identity used to pair native results with a model."""
+        return self.get_model_hash()
 
     def change_device(self, device: torch.device) -> None:
         """
@@ -113,11 +140,14 @@ class FEAController(Serializable):
         Returns:
             None
         """
-        serialized_data = self._serialize()
-        if if_save_source_code: 
-            np.savez_compressed(path, data = serialized_data, source_code = self._subclass_source_code)
-        else:
-            np.savez_compressed(path, data = serialized_data)
+        model_hash = self.get_model_hash()
+        save_data = {
+            "data": self._serialize(),
+            "model_hash": model_hash,
+        }
+        if if_save_source_code:
+            save_data["source_code"] = self._subclass_source_code
+        np.savez_compressed(path, **save_data)
 
     def GC2RGC(self, GC: torch.Tensor) -> list[torch.Tensor]:
         """
@@ -163,9 +193,11 @@ def load_model(path: str) -> FEAController:
     Returns:
         FEAController: The loaded finite element model.
     """
-    loaded = np.load(path, allow_pickle=True)
-    serialized_data = loaded['data']
-    return FEAController._deserialize(serialized_data)
+    with np.load(path, allow_pickle=True) as loaded:
+        serialized_data = loaded['data']
+        controller = FEAController._deserialize(serialized_data)
+        controller._model_hash = str(np.asarray(loaded['model_hash']).reshape(-1)[0])
+        return controller
 
 def retrieve_source_code(path: str, path_out: str):
     """

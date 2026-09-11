@@ -3,6 +3,7 @@ import torch
 from .base import BaseLoad
 
 class Moment(BaseLoad):
+    _serialized_attributes_exclude = ['rp_index']
 
     def __init__(self, rp_name: str, moment: list[float]) -> None:
         super().__init__()

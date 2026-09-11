@@ -4,6 +4,10 @@ from .base import BaseLoad
 from ..elements.dimension3 import Element_3D
 class BodyForce(BaseLoad):
 
+    _serialized_attributes_exclude = [
+        '_element', '_pdU_indices', '_pdU_values', '_instance_RGC_index',
+    ]
+
     def __init__(self, instance_name: str, element_name: str, force_density: list[float] = [0.0, 0.0, -9.81e-6]) -> None:
         """
         Initialize the body force load.

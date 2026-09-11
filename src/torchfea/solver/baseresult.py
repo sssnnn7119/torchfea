@@ -15,6 +15,9 @@ class BaseResult():
         self.converged: bool = False
         """Whether the solution converged."""
 
+        self.model_hash: str | None = None
+        """Identity of the model used to produce this result."""
+
         self.GC: torch.Tensor = None
         """The generalized coordinates of the solution."""
 

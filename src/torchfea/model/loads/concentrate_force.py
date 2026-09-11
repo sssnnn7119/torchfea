@@ -4,6 +4,7 @@ import torch
 from .base import BaseLoad
 
 class Concentrate_Force(BaseLoad):
+    _serialized_attributes_exclude = ['rp_index']
 
     def __init__(self, rp_name: str, force: list[float]) -> None:
         super().__init__()

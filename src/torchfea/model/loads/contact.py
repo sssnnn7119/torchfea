@@ -161,7 +161,8 @@ class ContactSelf(ContactBase):
                               '_ignore_min_normal', 
                               '_ignore_max_normal', 
                               '_initial_detact_ratio', 
-                              '_parameters']
+                              '_parameters',
+                              'mesh_size']
 
     def __init__(self, instance_name: str, surface_name: str,
                  ignore_min_normal: float = 0.5,
@@ -1213,4 +1214,3 @@ class Contact(ContactBase):
         RGC_remain_index[instance1._RGC_index][self.surface_element1._elems.flatten().unique().cpu()] = True
         RGC_remain_index[instance2._RGC_index][self.surface_element2._elems.flatten().unique().cpu()] = True
         return RGC_remain_index
-

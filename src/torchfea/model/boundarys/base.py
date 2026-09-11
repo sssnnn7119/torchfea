@@ -4,6 +4,8 @@ from ..obj_base import BaseObj
 
 
 class BaseBoundary(BaseObj):
+
+	_serialized_attributes_exclude = ['index_nodes', '_constraint_index']
 	"""
 	Boundary base class. Provides the same surface API as constraints where relevant,
 	but typically only modifies RGC and required DoFs (Dirichlet conditions).
@@ -27,7 +29,7 @@ class BaseBoundary(BaseObj):
 		"""
 		return RGC
 
-	# For compatibility with Assembly constraint hooks, provide no-op stubs
+	# Boundary objects provide the same solver hooks as constraints.
 	def modify_R_K(self, RGC: list[torch.Tensor], R0: torch.Tensor,
 				   K_indices: torch.Tensor = None, K_values: torch.Tensor = None,
 				   if_onlyforce: bool = False, *args, **kwargs):
@@ -36,4 +38,3 @@ class BaseBoundary(BaseObj):
 		return (torch.zeros(self._assembly._RGC_list_indexStart[-1]),
 				torch.zeros([2, 0], dtype=torch.int64),
 				torch.zeros([0]))
-

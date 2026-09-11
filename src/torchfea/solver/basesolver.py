@@ -12,7 +12,10 @@ class BaseSolver(Serializable):
     """
     Base class for all solvers in the FEA module.
     """
-    _serialized_attributes_exclude = ['assembly']
+    _serialized_attributes_exclude = [
+        'assembly', '_iter_now', 'K_solver', 'K_sp', 'if_factorized',
+        '__low_alpha_count',
+    ]
     def __init__(self) -> None:
         """
         Initialize the FEA class.
@@ -45,4 +48,3 @@ class BaseSolver(Serializable):
             BaseResult: The result of the finite element analysis. The result object should include convergence metadata (e.g. `converged`).
         """
         pass
-
