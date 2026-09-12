@@ -7,80 +7,36 @@ The workbench has two deliberately separate paths:
 * :func:`create_part` applies one global mesh size, creates the final C3D4
   volume mesh, and maps Gmsh surface/volume entities back to torchfea sets.
 
-The UI calls this kernel module; no UI code is required to replay OCC history.
+Each operation owns its OCC implementation in ``operations.py``;
+``OCCBuilder`` owns history dependency and entity-lifetime management. The UI
+calls this kernel module and contains no CAD execution implementation.
 """
 
 from __future__ import annotations
 
-import base64
 from collections import defaultdict
 import logging
 import os
-import tempfile
 import threading
 from typing import Iterable
 
 import numpy as np
 import torch
 
-from .history import CADHistory, CADOperation
+from .builder import OCCBuilder
+from .history import CADHistory
+from .operations import CADOperation
 
 LOGGER = logging.getLogger("torchfea.cae")
 
 
-_PRIMITIVES = {"box", "wedge", "cylinder", "sphere", "cone", "torus"}
-_BOOLEANS = {"fuse", "cut", "intersect", "fragment"}
-_TRANSFORMS = {"translate", "rotate", "dilate", "mirror"}
 _GMSH_LOCK = threading.RLock()
-
-
-def step_file_values(path: str) -> dict[str, str]:
-    """Read a STEP file into serializable CAD-operation values."""
-    source_path = os.fspath(path)
-    if not source_path:
-        raise ValueError("STEP import path cannot be empty.")
-    try:
-        with open(source_path, "rb") as source:
-            content = source.read()
-    except OSError as exc:
-        raise ValueError(f"Cannot read STEP file '{source_path}': {exc}") from exc
-    if not content:
-        raise ValueError(f"STEP file '{source_path}' is empty.")
-    return {
-        "data": base64.b64encode(content).decode("ascii"),
-        "filename": os.path.basename(source_path),
-    }
 
 
 def _operation_list(source: Iterable[CADOperation] | CADHistory) -> list[CADOperation]:
     if isinstance(source, CADHistory):
         return list(source.operations)
     return list(source)
-
-
-def primitive_defaults(kind: str) -> dict[str, float]:
-    """Default native OCC parameters for a newly inserted feature."""
-    defaults = {
-        "box": {"x": 0., "y": 0., "z": 0., "dx": 20., "dy": 10., "dz": 5.},
-        "wedge": {"x": 0., "y": 0., "z": 0., "dx": 20., "dy": 10., "dz": 5., "ltx": 0.},
-        "cylinder": {"x": 0., "y": 0., "z": 0., "dx": 0., "dy": 0., "dz": 20., "radius": 5.},
-        "sphere": {"x": 0., "y": 0., "z": 0., "radius": 5.},
-        "cone": {"x": 0., "y": 0., "z": 0., "dx": 0., "dy": 0., "dz": 20., "radius1": 5., "radius2": 1.},
-        "torus": {"x": 0., "y": 0., "z": 0., "major_radius": 8., "minor_radius": 2.},
-    }
-    return dict(defaults[kind])
-
-
-def transform_defaults(kind: str) -> dict[str, float]:
-    """Default values for an in-history OCC transformation feature."""
-    defaults = {
-        "translate": {"dx": 5., "dy": 0., "dz": 0.},
-        "rotate": {"x": 0., "y": 0., "z": 0., "ax": 0., "ay": 0., "az": 1., "angle": 1.5707963267948966},
-        "dilate": {"x": 0., "y": 0., "z": 0., "sx": 1., "sy": 1., "sz": 1.},
-        # ax + by + cz + d = 0, defaulting to mirror in the x=0 plane.
-        "mirror": {"a": 1., "b": 0., "c": 0., "d": 0.},
-    }
-    return dict(defaults[kind])
 
 
 def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
@@ -110,7 +66,7 @@ def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear(); gmsh.model.add("torchfea_brep_preview")
-        volumes = _build_occ(gmsh, operations)
+        volumes = OCCBuilder(gmsh).replay(operations)
         LOGGER.debug("BREP OCC history built: final_volumes=%s", volumes)
         _set_preview_size(gmsh, volumes)
         gmsh.model.mesh.generate(2)
@@ -222,7 +178,7 @@ def export_step(operations: Iterable[CADOperation] | CADHistory, path: str) -> N
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear()
         gmsh.model.add("torchfea_step_export")
-        volumes = _build_occ(gmsh, operations)
+        volumes = OCCBuilder(gmsh).replay(operations)
         if not volumes:
             raise RuntimeError("Part has no final OCC volume to export.")
         gmsh.write(output_path)
@@ -238,12 +194,13 @@ def export_step(operations: Iterable[CADOperation] | CADHistory, path: str) -> N
 
 
 def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: float):
-    """Mesh final OCC volumes once and adapt them to a C3D4 torchfea Part."""
+    """Mesh final OCC volumes and resolve any CAD history set definitions."""
     import gmsh
 
     from ..model.part import Part
     from ..model.elements import initialize_element
 
+    history = operations if isinstance(operations, CADHistory) else None
     operations = _operation_list(operations)
     mesh_size = float(mesh_size)
     LOGGER.info("FE mesh start: operations=%d mesh_size=%r (%s)", len(operations), mesh_size, type(mesh_size).__name__)
@@ -259,7 +216,7 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear(); gmsh.model.add("torchfea_analysis_mesh")
-        volumes = _build_occ(gmsh, operations)
+        volumes = OCCBuilder(gmsh).replay(operations)
         LOGGER.debug("FE OCC history built: final_volumes=%s", volumes)
         gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
@@ -325,12 +282,16 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
             gmsh_surface_sets[tag] = groups
             part.add_surface_set(f"gmsh_surface_{tag}", groups)
             part.add_node_set(f"gmsh_nodes_{tag}", surface_nodes[tag])
-    # Public UI metadata: Gmsh entity tag -> native torchfea selection.
+    # Runtime maps used to resolve CADHistory selectors.  They are excluded
+    # from Part serialization; the CAD history is the persistent definition.
     part._gmsh_surface_sets = gmsh_surface_sets
     part._gmsh_surface_nodes = surface_nodes
     part._gmsh_volume_elements = volume_elements
     part._gmsh_vertex_nodes = vertex_nodes
-    part.exterior_surface = "extern"
+    if history is not None:
+        _apply_history_sets(part, history)
+    else:
+        part.exterior_surface = "extern"
     LOGGER.info("FE mesh complete: torchfea nodes=%s elements=%s generated_sets=%s",
                 tuple(part.nodes.shape),
                 {name: tuple(element._elems.shape) for name, element in part.elems.items()},
@@ -339,178 +300,72 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
     return part
 
 
-def _build_occ(gmsh, operations: Iterable) -> list[int]:
-    """Replay ordered OCC primitive and boolean features, returning final volumes."""
-    occ = gmsh.model.occ
-    operations = list(operations)
-    if not operations:
-        raise ValueError("A Part needs at least one OCC feature.")
-    outputs: dict[str, list[tuple[int, int]]] = {}
-    available: set[str] = set()
-    seen: set[str] = set()
-    alive: list[tuple[int, int]] = []
-    for operation in operations:
-        kind, values, op_id = operation.kind, operation.values, str(operation.id).strip()
-        inputs = list(operation.inputs)
-        if not op_id:
-            raise ValueError("Every OCC feature needs a non-empty id.")
-        if op_id in seen:
-            raise ValueError(f"Duplicate OCC feature id '{op_id}'.")
-        unknown = [name for name in inputs if name not in seen]
-        if unknown:
+def _apply_history_sets(part, history: CADHistory) -> None:
+    """Resolve CAD topology selections onto the freshly generated FE mesh."""
+    external_name = str(getattr(history, "exterior_surface", "extern")).strip() or "extern"
+    if external_name != "extern":
+        if external_name in part.surfaces:
             raise ValueError(
-                f"OCC feature '{op_id}' references unknown or future feature(s): {unknown}.")
-        unavailable = [name for name in inputs if name not in available]
-        if unavailable:
+                f"CAD exterior surface '{external_name}' conflicts with an existing surface.")
+        part.surfaces[external_name] = part.surfaces["extern"]
+        del part.surfaces._surface_dict["extern"]
+    part.exterior_surface = external_name
+
+    def resolve(selector: str, kind: str):
+        fields = str(selector).split(":", 2)
+        if len(fields) == 2 and fields[0] == "cad" and fields[1] == "all":
+            if kind == "surface":
+                return part.surfaces[part.exterior_surface]
+            if kind == "node":
+                return np.arange(len(part.nodes), dtype=int)
+            return np.arange(sum(len(element._elems) for element in part.elems.values()), dtype=int)
+        if len(fields) != 3 or fields[0] != "cad":
+            raise ValueError(f"Invalid CAD selector '{selector}'.")
+        selector_kind, raw_tag = fields[1], fields[2]
+        try:
+            tag = int(raw_tag)
+        except ValueError as exc:
+            raise ValueError(f"Invalid CAD selector '{selector}'.") from exc
+        maps = {
+            ("surface", "surface"): part._gmsh_surface_sets,
+            ("node", "surface"): part._gmsh_surface_nodes,
+            ("node", "vertex"): part._gmsh_vertex_nodes,
+            ("element", "volume"): part._gmsh_volume_elements,
+        }
+        try:
+            return maps[(kind, selector_kind)][tag]
+        except KeyError as exc:
             raise ValueError(
-                f"OCC feature '{op_id}' references consumed feature(s): {unavailable}.")
-        if len(inputs) != len(set(inputs)):
-            raise ValueError(f"OCC feature '{op_id}' contains duplicate inputs.")
-        LOGGER.debug("OCC operation: id=%s kind=%s inputs=%s values=%s", op_id, kind,
-                     inputs, values)
-        if kind in _PRIMITIVES:
-            if inputs:
-                raise ValueError(f"Primitive feature '{op_id}' cannot have inputs.")
-            output = [(3, _add_primitive(occ, kind, values))]
-            alive.extend(output)
-        elif kind == "step_import":
-            if inputs:
-                raise ValueError(f"STEP import feature '{op_id}' cannot have inputs.")
-            encoded = values["data"]
-            if not isinstance(encoded, str) or not encoded:
-                raise ValueError(f"STEP import feature '{op_id}' has no embedded file data.")
-            try:
-                content = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError) as exc:
-                raise ValueError(f"STEP import feature '{op_id}' contains invalid file data.") from exc
-            temporary_path = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                        prefix="torchfea_step_", suffix=".step", delete=False) as handle:
-                    temporary_path = handle.name
-                    handle.write(content)
-                imported = occ.importShapes(temporary_path)
-                occ.synchronize()
-            finally:
-                if temporary_path:
-                    try:
-                        os.unlink(temporary_path)
-                    except OSError as exc:
-                        LOGGER.warning("could not remove temporary STEP import %s: %s",
-                                       temporary_path, exc)
-            output = [entity for entity in imported if int(entity[0]) == 3]
-            if not output:
-                raise ValueError(f"STEP import feature '{op_id}' contains no solid volume.")
-            alive.extend(output)
-        elif kind in _BOOLEANS:
-            if len(inputs) != 2:
-                raise ValueError(f"Boolean feature '{op_id}' needs exactly two input features.")
-            object_entities, tool_entities = outputs[inputs[0]], outputs[inputs[1]]
-            if not object_entities or not tool_entities:
-                raise ValueError(f"Boolean feature '{op_id}' has unavailable inputs.")
-            if kind == "fuse":
-                output, _ = occ.fuse(object_entities, tool_entities, removeObject=True, removeTool=True)
-            elif kind == "cut":
-                output, _ = occ.cut(object_entities, tool_entities, removeObject=True, removeTool=True)
-            elif kind == "intersect":
-                output, _ = occ.intersect(object_entities, tool_entities, removeObject=True, removeTool=True)
-            else:
-                output, _ = occ.fragment(object_entities, tool_entities, removeObject=True, removeTool=True)
-            output = [entity for entity in output if entity[0] == 3]
-            consumed = set(object_entities + tool_entities)
-            alive = [entity for entity in alive if entity not in consumed]
-            alive.extend(output)
-        elif kind in _TRANSFORMS:
-            if len(operation.inputs) != 1:
-                raise ValueError(f"Transform feature '{op_id}' needs exactly one input feature.")
-            output = outputs[inputs[0]]
-            if not output:
-                raise ValueError(f"Transform feature '{op_id}' has an unavailable input.")
-            _transform(occ, kind, output, values)
-            # The transform intentionally changes the selected OCC entities
-            # in place.  Replacing the alive entries keeps a transformed
-            # feature as the current leaf in the history graph.
-            consumed = set(output)
-            alive = [entity for entity in alive if entity not in consumed]
-            alive.extend(output)
+                f"CAD selector '{selector}' does not identify a final {kind} entity.") from exc
+
+    for selection in getattr(history, "sets", []):
+        values = resolve(selection.selector, selection.kind)
+        if selection.kind == "surface":
+            if selection.name in part.surfaces:
+                raise ValueError(f"CAD surface set '{selection.name}' already exists.")
+            part.add_surface_set(selection.name, values)
+            face_nodes = []
+            for element_ids, side in values:
+                element = next(iter(part.elems.values()))
+                face_nodes.append(
+                    element._elems[np.asarray(element_ids, dtype=int)][:,
+                    element.surfaceid_map[int(side)]].detach().cpu().numpy().ravel())
+            generated_name = f"surface_{selection.name}_nodes"
+            if generated_name in part.set_nodes:
+                raise ValueError(
+                    f"CAD surface set '{selection.name}' conflicts with its generated node set.")
+            part.add_node_set(
+                generated_name,
+                np.unique(np.concatenate(face_nodes)),
+            )
+        elif selection.kind == "node":
+            if selection.name in {"all", "surface_all"} or selection.name in part.set_nodes:
+                raise ValueError(f"CAD node set '{selection.name}' is reserved or duplicated.")
+            part.add_node_set(selection.name, np.asarray(values, dtype=int).ravel())
         else:
-            raise ValueError(f"Unsupported OCC feature '{kind}'.")
-        occ.synchronize()
-        outputs[op_id] = output
-        seen.add(op_id)
-        for input_id in inputs:
-            available.remove(input_id)
-        available.add(op_id)
-    if not alive:
-        raise ValueError("A Part needs at least one native OCC feature.")
-    return [tag for dimension, tag in dict.fromkeys(alive) if dimension == 3]
-
-
-def _add_primitive(occ, kind: str, values: dict[str, float | int]) -> int:
-    def value(key: str) -> float:
-        return float(values[key])
-    if kind == "box":
-        if min(value("dx"), value("dy"), value("dz")) <= 0:
-            raise ValueError("Box dimensions must be positive.")
-        return occ.addBox(value("x"), value("y"), value("z"),
-                          value("dx"), value("dy"), value("dz"))
-    if kind == "wedge":
-        if min(value("dx"), value("dy"), value("dz")) <= 0:
-            raise ValueError("Wedge dimensions must be positive.")
-        # Gmsh's seventh positional argument is ``tag``; ``ltx`` is the
-        # eighth one.  Passing ltx as argument seven makes non-zero values
-        # look like an integer entity tag and causes Wedge creation/preview
-        # to fail.  Keep the automatic tag explicit and pass the top extent
-        # in its documented slot.
-        return occ.addWedge(value("x"), value("y"), value("z"), value("dx"),
-                            value("dy"), value("dz"), -1, value("ltx"))
-    if kind == "cylinder":
-        axis = np.array([value("dx"), value("dy"), value("dz")])
-        if value("radius") <= 0 or np.linalg.norm(axis) == 0:
-            raise ValueError("Cylinder radius and axis must be positive.")
-        return occ.addCylinder(value("x"), value("y"), value("z"), *axis, value("radius"))
-    if kind == "sphere":
-        if value("radius") <= 0:
-            raise ValueError("Sphere radius must be positive.")
-        return occ.addSphere(value("x"), value("y"), value("z"), value("radius"))
-    if kind == "cone":
-        axis = np.array([value("dx"), value("dy"), value("dz")])
-        if min(value("radius1"), value("radius2")) < 0 or np.linalg.norm(axis) == 0:
-            raise ValueError("Cone radii and axis must be valid.")
-        return occ.addCone(value("x"), value("y"), value("z"), *axis,
-                           value("radius1"), value("radius2"))
-    if kind == "torus":
-        if min(value("major_radius"), value("minor_radius")) <= 0:
-            raise ValueError("Torus radii must be positive.")
-        return occ.addTorus(value("x"), value("y"), value("z"),
-                            value("major_radius"), value("minor_radius"))
-    raise ValueError(f"Unknown primitive '{kind}'.")
-
-
-def _transform(occ, kind: str, entities: list[tuple[int, int]],
-               values: dict[str, float | int]) -> None:
-    """Apply one native OCC transformation to a feature's live entities."""
-    def value(key: str) -> float:
-        return float(values[key])
-    if kind == "translate":
-        occ.translate(entities, value("dx"), value("dy"), value("dz"))
-    elif kind == "rotate":
-        axis = np.asarray([value("ax"), value("ay"), value("az")])
-        if np.linalg.norm(axis) == 0:
-            raise ValueError("Rotate transform needs a non-zero axis.")
-        occ.rotate(entities, value("x"), value("y"), value("z"), *axis, value("angle"))
-    elif kind == "dilate":
-        if min(abs(value("sx")), abs(value("sy")), abs(value("sz"))) == 0:
-            raise ValueError("Scale factors must be non-zero.")
-        occ.dilate(entities, value("x"), value("y"), value("z"),
-                   value("sx"), value("sy"), value("sz"))
-    elif kind == "mirror":
-        normal = np.asarray([value("a"), value("b"), value("c")])
-        if np.linalg.norm(normal) == 0:
-            raise ValueError("Mirror transform needs a non-zero plane normal.")
-        occ.mirror(entities, *normal, value("d"))
-    else:
-        raise ValueError(f"Unknown OCC transform '{kind}'.")
+            if selection.name == "all" or selection.name in part.set_elements:
+                raise ValueError(f"CAD element set '{selection.name}' is reserved or duplicated.")
+            part.add_element_set(selection.name, np.asarray(values, dtype=int).ravel())
 
 
 def _local_nodes(node_tags, node_coords):

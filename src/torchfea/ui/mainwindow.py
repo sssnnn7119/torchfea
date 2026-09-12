@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
             self._loaded_controller = controller
             self._loaded_revision = self.workbench._definition_revision
             self._loaded_model_hash = loaded_model_hash
-            self.postprocess.set_project(self.project)
+            self.postprocess.set_project(self.project, controller=controller)
             self._show_page(self.workbench)
             self.statusBar().showMessage(T("已打开：", "Opened: ") + path, 4000)
         except Exception as exc:
@@ -192,9 +192,21 @@ class MainWindow(QMainWindow):
                     and self._loaded_revision == self.workbench._definition_revision
                     and not self.workbench._editor_dirty):
                 controller = self._loaded_controller
+            elif self.workbench._assembly_mesh_controller is not None:
+                controller = self.workbench._assembly_mesh_controller
+            elif self.workbench._all_instance_parts_meshed():
+                controller = build_controller(
+                    self.project,
+                    meshed_parts=self.workbench._mesh_parts)
             else:
                 controller = build_controller(self.project)
             controller.save_model(path)
+            # Saving a native model also saves its already generated Part
+            # meshes.  Keep the same controller in the workbench so the UI
+            # does not regress to an "unmeshed" state after saving.
+            self.workbench._assembly_mesh_controller = controller
+            self.workbench._mesh_parts = dict(controller.assembly._parts)
+            self.workbench._update_view_tabs()
             # The saved file and this exact editable definition now share the
             # same native controller identity.  Future result imports may use
             # it directly until the next applied editor change.
@@ -344,10 +356,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, T("导入失败", "Import failed"), str(exc))
 
-    def submit_project(self, project) -> None:
-        """Move the submitted definition to postprocess without solving it."""
+    def submit_project(self, project, controller) -> None:
+        """Move the meshed definition and its native controller to postprocess."""
         self.project = project
-        self.postprocess.set_project(project)
+        self.postprocess.set_project(project, controller=controller)
         self._show_page(
             self.postprocess,
             T("模型已提交：点击“1 · 开始计算”。",

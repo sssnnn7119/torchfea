@@ -1,144 +1,278 @@
-"""Serializable CAD feature histories used by the finite-element kernel."""
+"""Serializable CAD histories used by the finite-element kernel."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterable, Iterator
+from dataclasses import dataclass
+from numbers import Integral
+from typing import Iterable, Iterator, TypeVar
 
 from ..interfaces import Serializable
+from .operations import (
+    Box,
+    CADOperation,
+    Cone,
+    Cut,
+    Cylinder,
+    Dilate,
+    Fragment,
+    Fuse,
+    Intersect,
+    Mirror,
+    Rotate,
+    Sphere,
+    StepImport,
+    Torus,
+    Translate,
+    Wedge,
+)
+
+
+OperationType = TypeVar("OperationType", bound=CADOperation)
 
 
 @dataclass
-class CADOperation(Serializable):
-    """One native OCC operation in an ordered Part history.
+class CADSetDefinition(Serializable):
+    """A named CAD-topology selection stored with the feature history.
 
-    The operation graph is deliberately data-only.  It can therefore be
-    authored from Python, edited by the CAE UI, serialized with the normal
-    torchfea object serializer, and replayed by the kernel's Gmsh adapter.
+    ``selector`` addresses OCC topology (for example
+    ``cad:surface:7``), never FE node or element indices.  The selector is
+    resolved only after the history has been replayed and the analysis mesh
+    has been generated.
     """
 
-    id: str
+    name: str
     kind: str
-    values: dict[str, object] = field(default_factory=dict)
-    inputs: list[str] = field(default_factory=list)
+    selector: str
+
+    def __post_init__(self) -> None:
+        self.name = str(self.name).strip()
+        self.kind = str(self.kind).strip().casefold()
+        self.selector = str(self.selector).strip()
+        if not self.name:
+            raise ValueError("A CAD set needs a non-empty name.")
+        if self.kind not in {"node", "element", "surface"}:
+            raise ValueError(f"Unknown CAD set kind '{self.kind}'.")
+        if not self.selector.startswith("cad:"):
+            raise ValueError(
+                "CAD set selectors must address topology with the 'cad:' prefix.")
 
 
 class CADHistory(Serializable):
-    """Ordered, replayable OCC history for one discrete Part definition."""
+    """Ordered OCC features and topology selections for one Part."""
 
-    _serialized_attributes = ["operations", "mesh_size"]
+    _serialized_attributes = ["operations", "sets", "mesh_size", "exterior_surface"]
 
-    def __init__(self, operations: Iterable[CADOperation] | None = None,
-                 mesh_size: float | None = None):
-        self.operations: list[CADOperation] = list(operations or [])
-        # This is the last global FE mesh size used for this history.  It is
-        # metadata rather than a CAD feature, but retaining it makes a saved
-        # Part's geometry-and-meshing provenance explicit.
+    def __init__(
+        self,
+        operations: Iterable[CADOperation] | None = None,
+        mesh_size: float | None = None,
+        sets: Iterable[CADSetDefinition] | None = None,
+        exterior_surface: str = "extern",
+    ) -> None:
+        self.operations: list[CADOperation] = []
+        for operation in operations or ():
+            self.add(operation)
+        self.sets: list[CADSetDefinition] = []
+        for selection in sets or ():
+            self.add_set(selection)
         self.mesh_size = None if mesh_size is None else float(mesh_size)
+        self.exterior_surface = str(exterior_surface).strip() or "extern"
 
-    def add(self, operation: CADOperation) -> CADOperation:
+    def add(self, operation: OperationType) -> OperationType:
+        """Append one explicitly typed CAD operation."""
         if not isinstance(operation, CADOperation):
-            raise TypeError("CAD history entries must be CADOperation objects.")
+            raise TypeError("CAD history entries must inherit CADOperation.")
+        if any(existing.id == operation.id for existing in self.operations):
+            raise ValueError(f"CAD operation id '{operation.id}' already exists.")
         self.operations.append(operation)
         return operation
 
-    def _next_id(self, kind: str) -> str:
-        prefix = kind.title()
+    def add_set(self, selection: CADSetDefinition) -> CADSetDefinition:
+        """Add one named topology selection to this Part history."""
+        if not isinstance(selection, CADSetDefinition):
+            raise TypeError("CAD history sets must be CADSetDefinition objects.")
+        if any(item.kind == selection.kind and item.name == selection.name
+               for item in self.sets):
+            raise ValueError(
+                f"CAD {selection.kind} set '{selection.name}' already exists.")
+        self.sets.append(selection)
+        return selection
+
+    def set_set(self, name: str, kind: str, selector: str | int) -> CADSetDefinition:
+        """Create or replace one named topology selection."""
+        kind = str(kind).strip().casefold()
+        if selector == "all":
+            selector = "cad:all"
+        elif isinstance(selector, Integral):
+            entity_kind = {"surface": "surface", "node": "vertex", "element": "volume"}[kind]
+            selector = f"cad:{entity_kind}:{selector}"
+        replacement = CADSetDefinition(name, kind, selector)
+        self.sets = [item for item in self.sets
+                     if not (item.kind == replacement.kind and item.name == replacement.name)]
+        self.sets.append(replacement)
+        return replacement
+
+    def add_surface_set(self, name: str, selector: str | int) -> CADSetDefinition:
+        return self.set_set(name, "surface", selector)
+
+    def add_node_set(self, name: str, selector: str | int) -> CADSetDefinition:
+        return self.set_set(name, "node", selector)
+
+    def add_element_set(self, name: str, selector: str | int) -> CADSetDefinition:
+        return self.set_set(name, "element", selector)
+
+    def remove_set(self, name: str, kind: str) -> None:
+        target = CADSetDefinition(name, kind, "cad:all")
+        self.sets = [item for item in self.sets
+                     if not (item.kind == target.kind and item.name == target.name)]
+
+    def remove_surface_set(self, name: str) -> None:
+        self.remove_set(name, "surface")
+
+    def remove_node_set(self, name: str) -> None:
+        self.remove_set(name, "node")
+
+    def remove_element_set(self, name: str) -> None:
+        self.remove_set(name, "element")
+
+    def _next_id(self, operation_type: type[CADOperation]) -> str:
+        prefix = operation_type.__name__
         used = {operation.id for operation in self.operations}
         index = 1
         while f"{prefix}-{index}" in used:
             index += 1
         return f"{prefix}-{index}"
 
-    def add_primitive(self, kind: str, **values) -> CADOperation:
-        from .occ import primitive_defaults
+    def add_box(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        dx: float = 20.0,
+        dy: float = 10.0,
+        dz: float = 5.0,
+    ) -> Box:
+        return self.add(Box(self._next_id(Box), x, y, z, dx, dy, dz))
 
-        try:
-            defaults = primitive_defaults(kind)
-        except KeyError as exc:
-            raise ValueError(f"Unsupported CAD primitive '{kind}'.") from exc
-        defaults.update(values)
-        return self.add(CADOperation(self._next_id(kind), kind, defaults))
+    def add_wedge(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        dx: float = 20.0,
+        dy: float = 10.0,
+        dz: float = 5.0,
+        ltx: float = 0.0,
+    ) -> Wedge:
+        return self.add(Wedge(self._next_id(Wedge), x, y, z, dx, dy, dz, ltx))
 
-    def add_box(self, x=0.0, y=0.0, z=0.0, dx=20.0, dy=10.0, dz=5.0, **values):
-        return self.add_primitive("box", x=x, y=y, z=z, dx=dx, dy=dy, dz=dz, **values)
+    def add_cylinder(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 20.0,
+        radius: float = 5.0,
+    ) -> Cylinder:
+        return self.add(Cylinder(
+            self._next_id(Cylinder), x, y, z, dx, dy, dz, radius))
 
-    def add_wedge(self, x=0.0, y=0.0, z=0.0, dx=20.0, dy=10.0, dz=5.0, ltx=0.0, **values):
-        return self.add_primitive("wedge", x=x, y=y, z=z, dx=dx, dy=dy, dz=dz, ltx=ltx, **values)
+    def add_sphere(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        radius: float = 5.0,
+    ) -> Sphere:
+        return self.add(Sphere(self._next_id(Sphere), x, y, z, radius))
 
-    def add_cylinder(self, x=0.0, y=0.0, z=0.0, dx=0.0, dy=0.0, dz=20.0,
-                     radius=5.0, **values):
-        return self.add_primitive(
-            "cylinder", x=x, y=y, z=z, dx=dx, dy=dy, dz=dz, radius=radius, **values)
+    def add_cone(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 20.0,
+        radius1: float = 5.0,
+        radius2: float = 1.0,
+    ) -> Cone:
+        return self.add(Cone(
+            self._next_id(Cone), x, y, z, dx, dy, dz, radius1, radius2))
 
-    def add_sphere(self, x=0.0, y=0.0, z=0.0, radius=5.0, **values):
-        return self.add_primitive("sphere", x=x, y=y, z=z, radius=radius, **values)
+    def add_torus(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        major_radius: float = 8.0,
+        minor_radius: float = 2.0,
+    ) -> Torus:
+        return self.add(Torus(
+            self._next_id(Torus), x, y, z, major_radius, minor_radius))
 
-    def add_cone(self, x=0.0, y=0.0, z=0.0, dx=0.0, dy=0.0, dz=20.0,
-                 radius1=5.0, radius2=1.0, **values):
-        return self.add_primitive(
-            "cone", x=x, y=y, z=z, dx=dx, dy=dy, dz=dz,
-            radius1=radius1, radius2=radius2, **values)
+    def import_step(self, path: str) -> StepImport:
+        return self.add(StepImport.from_file(self._next_id(StepImport), path))
 
-    def add_torus(self, x=0.0, y=0.0, z=0.0, major_radius=8.0,
-                  minor_radius=2.0, **values):
-        return self.add_primitive(
-            "torus", x=x, y=y, z=z,
-            major_radius=major_radius, minor_radius=minor_radius, **values)
+    def fuse(self, object_id: str, tool_id: str) -> Fuse:
+        return self.add(Fuse(self._next_id(Fuse), object_id, tool_id))
 
-    def import_step(self, path: str) -> CADOperation:
-        """Embed a STEP file as an import feature in this Part history."""
-        from .occ import step_file_values
+    def cut(self, object_id: str, tool_id: str) -> Cut:
+        return self.add(Cut(self._next_id(Cut), object_id, tool_id))
 
-        return self.add(CADOperation(
-            self._next_id("import"), "step_import", step_file_values(path)))
+    def intersect(self, object_id: str, tool_id: str) -> Intersect:
+        return self.add(Intersect(self._next_id(Intersect), object_id, tool_id))
 
-    def add_boolean(self, kind: str, object_id: str, tool_id: str) -> CADOperation:
-        if kind not in {"fuse", "cut", "intersect", "fragment"}:
-            raise ValueError(f"Unsupported CAD boolean '{kind}'.")
-        if object_id == tool_id:
-            raise ValueError("A CAD boolean needs two different input features.")
-        return self.add(CADOperation(
-            self._next_id(kind), kind, {}, [str(object_id), str(tool_id)]))
+    def fragment(self, object_id: str, tool_id: str) -> Fragment:
+        return self.add(Fragment(self._next_id(Fragment), object_id, tool_id))
 
-    def fuse(self, object_id: str, tool_id: str) -> CADOperation:
-        return self.add_boolean("fuse", object_id, tool_id)
+    def translate(
+        self,
+        input_id: str,
+        dx: float = 5.0,
+        dy: float = 0.0,
+        dz: float = 0.0,
+    ) -> Translate:
+        return self.add(Translate(self._next_id(Translate), input_id, dx, dy, dz))
 
-    def cut(self, object_id: str, tool_id: str) -> CADOperation:
-        return self.add_boolean("cut", object_id, tool_id)
+    def rotate(
+        self,
+        input_id: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        ax: float = 0.0,
+        ay: float = 0.0,
+        az: float = 1.0,
+        angle: float = 1.5707963267948966,
+    ) -> Rotate:
+        return self.add(Rotate(
+            self._next_id(Rotate), input_id, x, y, z, ax, ay, az, angle))
 
-    def intersect(self, object_id: str, tool_id: str) -> CADOperation:
-        return self.add_boolean("intersect", object_id, tool_id)
+    def dilate(
+        self,
+        input_id: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        sx: float = 1.0,
+        sy: float = 1.0,
+        sz: float = 1.0,
+    ) -> Dilate:
+        return self.add(Dilate(
+            self._next_id(Dilate), input_id, x, y, z, sx, sy, sz))
 
-    def fragment(self, object_id: str, tool_id: str) -> CADOperation:
-        return self.add_boolean("fragment", object_id, tool_id)
-
-    def add_transform(self, kind: str, input_id: str, **values) -> CADOperation:
-        from .occ import transform_defaults
-
-        try:
-            defaults = transform_defaults(kind)
-        except KeyError as exc:
-            raise ValueError(f"Unsupported CAD transform '{kind}'.") from exc
-        defaults.update(values)
-        return self.add(CADOperation(self._next_id(kind), kind, defaults, [str(input_id)]))
-
-    def translate(self, input_id: str, dx=5.0, dy=0.0, dz=0.0, **values):
-        return self.add_transform("translate", input_id, dx=dx, dy=dy, dz=dz, **values)
-
-    def rotate(self, input_id: str, x=0.0, y=0.0, z=0.0, ax=0.0,
-               ay=0.0, az=1.0, angle=1.5707963267948966, **values):
-        return self.add_transform(
-            "rotate", input_id, x=x, y=y, z=z, ax=ax, ay=ay, az=az,
-            angle=angle, **values)
-
-    def dilate(self, input_id: str, x=0.0, y=0.0, z=0.0, sx=1.0,
-               sy=1.0, sz=1.0, **values):
-        return self.add_transform(
-            "dilate", input_id, x=x, y=y, z=z, sx=sx, sy=sy, sz=sz, **values)
-
-    def mirror(self, input_id: str, a=1.0, b=0.0, c=0.0, d=0.0, **values):
-        return self.add_transform("mirror", input_id, a=a, b=b, c=c, d=d, **values)
+    def mirror(
+        self,
+        input_id: str,
+        a: float = 1.0,
+        b: float = 0.0,
+        c: float = 0.0,
+        d: float = 0.0,
+    ) -> Mirror:
+        return self.add(Mirror(self._next_id(Mirror), input_id, a, b, c, d))
 
     def preview(self) -> list[dict]:
         from .occ import preview_brep
@@ -154,8 +288,16 @@ class CADHistory(Serializable):
         return part
 
     def final_feature_ids(self) -> list[str]:
-        consumed = {input_id for operation in self.operations for input_id in operation.inputs}
-        return [operation.id for operation in self.operations if operation.id not in consumed]
+        consumed = {
+            input_id
+            for operation in self.operations
+            for input_id in operation.input_ids
+        }
+        return [
+            operation.id
+            for operation in self.operations
+            if operation.id not in consumed
+        ]
 
 
 class CADModel(Serializable):
@@ -163,11 +305,15 @@ class CADModel(Serializable):
 
     _serialized_attributes = ["parts", "mesh_size"]
 
-    def __init__(self, mesh_size: float | None = None):
+    def __init__(self, mesh_size: float | None = None) -> None:
         self.parts: dict[str, CADHistory] = {}
         self.mesh_size = None if mesh_size is None else float(mesh_size)
 
-    def add_part(self, name: str, history: CADHistory | None = None) -> CADHistory:
+    def add_part(
+        self,
+        name: str,
+        history: CADHistory | None = None,
+    ) -> CADHistory:
         name = str(name).strip()
         if not name:
             raise ValueError("CAD Part name cannot be empty.")
@@ -207,8 +353,7 @@ class CADModel(Serializable):
         self.mesh_size = float(size)
         return self.get_part(name).mesh(size)
 
-    def import_step(self, name: str, path: str) -> CADOperation:
-        """Embed a STEP file in a named Part history."""
+    def import_step(self, name: str, path: str) -> StepImport:
         return self.get_part(name).import_step(path)
 
     def __iter__(self) -> Iterator[str]:

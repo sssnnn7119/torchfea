@@ -15,7 +15,7 @@ import re
 import numpy as np
 import torch
 
-from torchfea.cad import CADOperation, primitive_defaults
+from torchfea.cad import Box, CADOperation
 from torchfea.interfaces import Serializable
 
 
@@ -60,6 +60,19 @@ def parse_faces(text: str) -> list[tuple[np.ndarray, int]]:
     return [(np.unique(ids), face) for face, ids in grouped.items()]
 
 
+def cad_selector(selection: str) -> str:
+    """Normalize a UI CAD selection without turning it into FE indices."""
+    value = str(selection).strip()
+    if value == "all":
+        return "cad:all"
+    if value.startswith("cad:"):
+        return value
+    if value.startswith("gmsh:"):
+        return "cad:" + value[6:]
+    raise ValueError(
+        f"CAD selection '{value}' is not a topology selector; mesh indices are not valid here.")
+
+
 @dataclass
 class GeometryDefinition:
     """Geometry source used by one Part.
@@ -67,12 +80,13 @@ class GeometryDefinition:
     ``cad`` Parts are replayed from OCC operations.  ``discrete`` Parts are
     already-meshed native :class:`torchfea.model.Part` objects, typically
     imported from an INP file and saved in the normal controller ``.npz``.
-    The native object is kept at runtime; ``discrete_data`` is only an
-    in-memory undo/redo snapshot and is not a second model file.
+    The native object is kept at runtime when a discrete mesh or a meshed CAD
+    controller is loaded; ``discrete_data`` is only an in-memory undo/redo
+    snapshot and is not a second model file.
     """
 
     operations: list[CADOperation] = field(
-        default_factory=lambda: [CADOperation("Base-1", "box", primitive_defaults("box"))])
+        default_factory=lambda: [Box("Box-1")])
     source: str = "cad"
     discrete_data: object = field(default=None, repr=False, compare=False)
     runtime_part: object = field(default=None, repr=False, compare=False)
@@ -203,7 +217,10 @@ class CAEProject:
                     "name": part.name,
                     "geometry": {
                         "source": part.geometry.source,
-                        "operations": [asdict(operation) for operation in part.geometry.operations],
+                        "operations": [
+                            operation._serialize()
+                            for operation in part.geometry.operations
+                        ],
                         "discrete_data": part.geometry.discrete_data,
                     },
                     "node_sets": [asdict(item) for item in part.node_sets],
@@ -304,15 +321,23 @@ class CAEProject:
                     np.arange(len(element._elems), dtype=int))
             return native_part
 
-        def geometry_for(part_name: str, native_part) -> GeometryDefinition:
+        def geometry_for(part_name: str, native_part):
             history = cad_model.parts.get(part_name)
             operations = list(history.operations) if history is not None else []
             if operations:
-                return GeometryDefinition(operations=operations, source="cad")
+                # Keep the native mesh as a runtime cache when a saved
+                # controller already contains one.  It is not serialized a
+                # second time; the controller's Part remains the source of
+                # the persisted mesh.
+                return GeometryDefinition(
+                    operations=operations,
+                    source="cad",
+                    runtime_part=native_part,
+                ), history
             native_part = ensure_native_exterior(native_part)
             return GeometryDefinition(
                 operations=[], source="discrete",
-                discrete_data=native_part._serialize(), runtime_part=native_part)
+                discrete_data=native_part._serialize(), runtime_part=native_part), None
 
         def material_definitions(native_part):
             from torchfea.model.elements.materials import LinearElastic, NeoHookean, NeoHookeanLnJ
@@ -372,27 +397,38 @@ class CAEProject:
         part_definitions = []
         for name, native_part in assembly._parts.items():
             materials, density, derived_sets = material_definitions(native_part)
-            exterior = str(native_part.exterior_surface)
-            surfaces = []
-            for surface_name in native_part.surfaces.keys():
-                surface_name = str(surface_name)
-                if surface_name == exterior or surface_name == "extern" or surface_name.startswith("gmsh_surface_"):
-                    continue
-                surfaces.append(NamedSet(surface_name, native_surface(native_part.surfaces[surface_name])))
-            nodes = []
-            for set_name, indices in native_part.set_nodes.items():
-                set_name = str(set_name)
-                if (set_name in {"all", "surface_all"}
-                        or set_name.startswith("gmsh_nodes_")
-                        or set_name.startswith("surface_") and set_name.endswith("_nodes")):
-                    continue
-                nodes.append(NamedSet(set_name, native_indices(indices)))
-            elements = [NamedSet(str(set_name), native_indices(indices))
-                        for set_name, indices in native_part.set_elements.items()
-                        if str(set_name) != "all"]
-            elements.extend(derived_sets)
+            geometry, history = geometry_for(str(name), native_part)
+            history_sets = list(getattr(history, "sets", [])) if history is not None else []
+            exterior = str(getattr(history, "exterior_surface", native_part.exterior_surface))
+            if history_sets:
+                surfaces = [NamedSet(item.name, item.selector)
+                            for item in history_sets if item.kind == "surface"]
+                nodes = [NamedSet(item.name, item.selector)
+                         for item in history_sets if item.kind == "node"]
+                elements = [NamedSet(item.name, item.selector)
+                            for item in history_sets if item.kind == "element"]
+            else:
+                surfaces = []
+                for surface_name in native_part.surfaces.keys():
+                    surface_name = str(surface_name)
+                    if surface_name == exterior or surface_name == "extern" or surface_name.startswith("gmsh_surface_"):
+                        continue
+                    surfaces.append(NamedSet(surface_name, native_surface(native_part.surfaces[surface_name])))
+                nodes = []
+                for set_name, indices in native_part.set_nodes.items():
+                    set_name = str(set_name)
+                    if (set_name in {"all", "surface_all"}
+                            or set_name.startswith("gmsh_nodes_")
+                            or set_name.startswith("surface_") and set_name.endswith("_nodes")):
+                        continue
+                    nodes.append(NamedSet(set_name, native_indices(indices)))
+                elements = [NamedSet(str(set_name), native_indices(indices))
+                            for set_name, indices in native_part.set_elements.items()
+                            if str(set_name) != "all"]
+            if not history_sets:
+                elements.extend(derived_sets)
             part_definitions.append(PartDefinition(
-                name=str(name), geometry=geometry_for(str(name), native_part),
+                name=str(name), geometry=geometry,
                 materials=materials, density=density,
                 node_sets=nodes, element_sets=elements,
                 surface_sets=surfaces, exterior_surface=exterior))
@@ -536,8 +572,10 @@ class CAEProject:
                     raise ValueError(f"Discrete Part '{part_data['name']}' has no native mesh.")
                 runtime_part = Serializable._deserialize(discrete_data)
             geometry = GeometryDefinition(
-                operations=[CADOperation(**operation_data)
-                            for operation_data in geometry_data["operations"]],
+                operations=[
+                    Serializable._deserialize(operation_data)
+                    for operation_data in geometry_data["operations"]
+                ],
                 source=source,
                 discrete_data=discrete_data,
                 runtime_part=runtime_part,
@@ -570,7 +608,7 @@ class CAEProject:
             mesh_size=float(data["mesh_size"]))
         return project
 
-def build_controller(project: CAEProject):
+def build_controller(project: CAEProject, meshed_parts: dict[str, object] | None = None):
     """Build a solver-ready native model from the UI definition.
 
     This intentionally calls the public CAD and Assembly APIs, so a model
@@ -583,6 +621,7 @@ def build_controller(project: CAEProject):
     from torchfea.cad import CADHistory, CADModel, create_part
 
     _validate_project_references(project)
+    meshed_parts = {} if meshed_parts is None else dict(meshed_parts)
     assembly = Assembly()
     cad_model = CADModel(mesh_size=project.mesh_size)
     for definition in project.parts:
@@ -591,9 +630,15 @@ def build_controller(project: CAEProject):
         if source not in {"cad", "discrete"}:
             raise ValueError(f"Unknown geometry source '{source}'.")
         operations = list(geometry.operations)
+        exterior_name = str(definition.exterior_surface).strip()
+        if not exterior_name:
+            raise ValueError(f"Part '{definition.name}' exterior surface name cannot be empty.")
+        cached_part = meshed_parts.get(definition.name)
         if source == "discrete":
             serialized_part = geometry.discrete_data
-            if serialized_part is not None:
+            if cached_part is not None:
+                part = Serializable._deserialize(cached_part._serialize())
+            elif serialized_part is not None:
                 part = Serializable._deserialize(serialized_part)
             else:
                 part = geometry.runtime_part
@@ -601,14 +646,22 @@ def build_controller(project: CAEProject):
                 raise ValueError(
                     f"Discrete Part '{definition.name}' has no serialized native mesh.")
         else:
-            cad_model.set_part(
-                definition.name,
-                CADHistory(operations, mesh_size=project.mesh_size),
-            )
-            part = create_part(operations, project.mesh_size)
-        exterior_name = str(definition.exterior_surface).strip()
-        if not exterior_name:
-            raise ValueError(f"Part '{definition.name}' exterior surface name cannot be empty.")
+            history = CADHistory(operations, mesh_size=project.mesh_size,
+                                 exterior_surface=exterior_name)
+            for node_set in definition.node_sets:
+                history.add_node_set(node_set.name, cad_selector(node_set.selection))
+            for element_set in definition.element_sets:
+                history.add_element_set(element_set.name, cad_selector(element_set.selection))
+            for surface_set in definition.surface_sets:
+                history.add_surface_set(surface_set.name, cad_selector(surface_set.selection))
+            cad_model.set_part(definition.name, history)
+            if cached_part is None:
+                part = create_part(history, project.mesh_size)
+            else:
+                # A Part mesh generated by the workbench is already the
+                # authoritative analysis mesh.  Clone it for the solver
+                # controller instead of replaying OCC and remeshing here.
+                part = Serializable._deserialize(cached_part._serialize())
         if source == "discrete":
             current_exterior = str(part.exterior_surface)
             if exterior_name != current_exterior:
@@ -620,58 +673,24 @@ def build_controller(project: CAEProject):
                         f"Part '{definition.name}' exterior surface '{current_exterior}' is missing.")
                 part.surfaces[exterior_name] = part.surfaces[current_exterior]
                 del part.surfaces._surface_dict[current_exterior]
-        elif exterior_name != "extern":
-            if exterior_name in part.surfaces:
-                raise ValueError(
-                    f"Part '{definition.name}' exterior surface name '{exterior_name}' is already in use.")
-            part.surfaces[exterior_name] = part.surfaces["extern"]
-            del part.surfaces._surface_dict["extern"]
-        part.exterior_surface = exterior_name
+        if source == "discrete":
+            part.exterior_surface = exterior_name
         density = torch.full(
             (1,), float(definition.density), dtype=torch.get_default_dtype(),
             device=part.nodes.device)
         for element in part.elems.values():
             element.density = density.expand(len(element._elems)).clone()
 
-        if source == "cad":
-            gmsh_vertex_nodes = part._gmsh_vertex_nodes
-            gmsh_surface_nodes = part._gmsh_surface_nodes
-            gmsh_surface_sets = part._gmsh_surface_sets
-            gmsh_volume_elements = part._gmsh_volume_elements
-        else:
-            gmsh_vertex_nodes = {}
-            gmsh_surface_nodes = {}
-            gmsh_surface_sets = {}
-            gmsh_volume_elements = {}
         element_data = next(iter(part.elems.values()), None)
         if element_data is None:
             raise ValueError(f"Part '{definition.name}' has no element blocks.")
         element_count = len(element_data._elems)
-        for node_set in definition.node_sets:
-            if node_set.selection.startswith("gmsh:vertex:"):
-                tag = int(node_set.selection.rsplit(":", 1)[1])
-                try:
-                    selected_node_indices = gmsh_vertex_nodes[tag]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"Node set '{node_set.name}' references missing Gmsh vertex tag {tag} "
-                        f"on Part '{definition.name}'.") from exc
-            elif node_set.selection.startswith("gmsh:surface:"):
-                tag = int(node_set.selection.rsplit(":", 1)[1])
-                try:
-                    selected_node_indices = gmsh_surface_nodes[tag]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"Node set '{node_set.name}' references missing Gmsh surface tag {tag} "
-                        f"on Part '{definition.name}'.") from exc
-            else:
-                selected_node_indices = (
-                    np.arange(len(part.nodes))
-                    if node_set.selection.strip().casefold() == "all"
-                    else parse_indices(node_set.selection))
+        for node_set in definition.node_sets if source == "discrete" else ():
+            selected_node_indices = (
+                np.arange(len(part.nodes), dtype=int)
+                if node_set.selection.strip().casefold() == "all"
+                else parse_indices(node_set.selection))
             if node_set.name in auto_node_set_names(definition):
-                raise ValueError(f"Node set name '{node_set.name}' on Part '{definition.name}' is reserved.")
-            if node_set.name in {f"gmsh_nodes_{tag}" for tag in gmsh_surface_nodes}:
                 raise ValueError(f"Node set name '{node_set.name}' on Part '{definition.name}' is reserved.")
             selected_node_indices = np.asarray(selected_node_indices, dtype=int).ravel()
             if (not len(selected_node_indices)
@@ -680,17 +699,8 @@ def build_controller(project: CAEProject):
                 raise ValueError(
                     f"Node set '{node_set.name}' on Part '{definition.name}' contains no valid node indices.")
             part.add_node_set(node_set.name, selected_node_indices)
-        for element_set in definition.element_sets:
-            if element_set.selection.startswith("gmsh:volume:"):
-                tag = int(element_set.selection.rsplit(":", 1)[1])
-                try:
-                    selected_element_indices = gmsh_volume_elements[tag]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"Element set '{element_set.name}' references missing Gmsh volume tag {tag} "
-                        f"on Part '{definition.name}'.") from exc
-            else:
-                selected_element_indices = parse_indices(element_set.selection)
+        for element_set in definition.element_sets if source == "discrete" else ():
+            selected_element_indices = parse_indices(element_set.selection)
             selected_element_indices = np.asarray(selected_element_indices, dtype=int).ravel()
             if (not len(selected_element_indices)
                     or np.any(selected_element_indices < 0)
@@ -700,19 +710,8 @@ def build_controller(project: CAEProject):
             if element_set.name == "all":
                 raise ValueError(f"Element set name 'all' on Part '{definition.name}' is reserved.")
             part.add_element_set(element_set.name, selected_element_indices)
-        for surface_set in definition.surface_sets:
-            if surface_set.selection.startswith("gmsh:surface:"):
-                tag = int(surface_set.selection.rsplit(":", 1)[1])
-                try:
-                    selected_surface_faces = gmsh_surface_sets[tag]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"Surface set '{surface_set.name}' references missing Gmsh surface tag {tag} "
-                        f"on Part '{definition.name}'.") from exc
-            else:
-                selected_surface_faces = parse_faces(surface_set.selection)
-            if surface_set.name in {f"gmsh_surface_{tag}" for tag in gmsh_surface_sets}:
-                raise ValueError(f"Surface set name '{surface_set.name}' on Part '{definition.name}' is reserved.")
+        for surface_set in definition.surface_sets if source == "discrete" else ():
+            selected_surface_faces = parse_faces(surface_set.selection)
             if not selected_surface_faces:
                 raise ValueError(f"Surface set '{surface_set.name}' on Part '{definition.name}' is empty.")
             for element_ids, side in selected_surface_faces:

@@ -20,13 +20,54 @@ from .model import (
     BoundaryDefinition, CAEProject, ConstraintDefinition, GeometryDefinition,
     InstanceDefinition, LoadDefinition, MaterialDefinition, NamedSet, PartDefinition,
     ReferencePointDefinition, build_controller,
-    auto_node_set_names, parse_indices, surface_node_set_name,
+    auto_node_set_names, cad_selector, parse_indices, surface_node_set_name,
 )
 from torchfea.cad import (
-    CADHistory, CADOperation, create_part, preview_brep, preview_discrete_part,
-    primitive_defaults, transform_defaults,
+    BooleanOperation,
+    Box,
+    CADHistory,
+    Cone,
+    Cut,
+    Cylinder,
+    Dilate,
+    Fragment,
+    Fuse,
+    Intersect,
+    Mirror,
+    Rotate,
+    Sphere,
+    StepImport,
+    Torus,
+    Translate,
+    Wedge,
+    create_part,
+    preview_brep,
+    preview_discrete_part,
 )
 from .postprocess import VTKMeshViewer
+
+
+def _brep_face_points(record) -> np.ndarray:
+    """Return face-owned vertices from a shared BREP tessellation array."""
+    points = np.asarray(record.get("points", []), dtype=float).reshape(-1, 3)
+    triangles = np.asarray(record.get("triangles", []), dtype=int).reshape(-1, 3)
+    if len(triangles):
+        points = points[np.unique(triangles.reshape(-1))]
+    return points
+
+
+_PRIMITIVE_OPERATION_TYPES = {
+    operation_type.kind: operation_type
+    for operation_type in (Box, Wedge, Cylinder, Sphere, Cone, Torus)
+}
+_BOOLEAN_OPERATION_TYPES = {
+    operation_type.kind: operation_type
+    for operation_type in (Fuse, Cut, Intersect, Fragment)
+}
+_TRANSFORM_OPERATION_TYPES = {
+    operation_type.kind: operation_type
+    for operation_type in (Translate, Rotate, Dilate, Mirror)
+}
 
 
 class Workbench(QWidget):
@@ -35,7 +76,7 @@ class Workbench(QWidget):
     #: Hand the current definition to the postprocess page.  Entering that
     #: page does not start a solve; the solve is an explicit second action
     #: there, matching the definition/observer flow used by MorphOpt.
-    submitRequested = Signal(object)
+    submitRequested = Signal(object, object)
     notify = Signal(str)
     newRequested = Signal()
     openRequested = Signal()
@@ -49,6 +90,7 @@ class Workbench(QWidget):
         self.project = project or CAEProject()
         self._mesh_parts: dict[str, object] = {}
         self._assembly_mesh_controller = None
+        self._assembly_mesh_view = None
         self._brep_part_records: dict[str, list[dict]] = {}
         self._brep_assembly_records: list[dict] = []
         self._preview_highlight: dict | None = None
@@ -74,6 +116,7 @@ class Workbench(QWidget):
         self._preview_timer.timeout.connect(self._refresh_preview_automatically)
         self._build_ui()
         self._seed_discrete_mesh_cache()
+        self._seed_loaded_cad_mesh_cache()
         self._update_view_tabs()
         self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
         self._redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
@@ -222,8 +265,8 @@ class Workbench(QWidget):
         foot.addWidget(self.message, 1)
         self.submit = QPushButton("▶ " + T("进入后处理", "Open postprocess"))
         self.submit.setToolTip(T(
-            "提交当前模型并进入后处理",
-            "Submit the current model and open postprocess"))
+            "提交已生成网格的模型并进入后处理",
+            "Submit the meshed model and open postprocess"))
         self.submit.setStyleSheet("background:#00796b; font-weight:600; padding:7px 18px")
         self.submit.clicked.connect(self._submit_project)
         foot.addWidget(self.submit)
@@ -239,10 +282,31 @@ class Workbench(QWidget):
         )
 
     def _submit_project(self) -> None:
-        """Submit only an applied definition to the postprocess page."""
+        """Submit a definition only after every used Part has a mesh."""
         if self._editor_dirty and not self._confirm_submit_with_pending_edit():
             return
-        self.submitRequested.emit(self.project)
+        if not self._all_instance_parts_meshed():
+            QMessageBox.warning(
+                self,
+                T("尚未剖分", "Mesh not generated"),
+                T("请先生成所有实例零件的 FE 网格。",
+                  "Generate FE meshes for all instance Parts first."))
+            return
+        try:
+            if self._assembly_mesh_controller is None:
+                self._assembly_mesh_controller = build_controller(
+                    self.project, meshed_parts=self._mesh_parts)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, T("模型准备失败", "Model preparation failed"), str(exc))
+            return
+        self.submitRequested.emit(self.project, self._assembly_mesh_controller)
+
+    def _all_instance_parts_meshed(self) -> bool:
+        """Return whether every Part used by an Instance has a native mesh."""
+        instance_part_names = {item.part_name for item in self.project.instances}
+        return bool(instance_part_names) and all(
+            name in self._mesh_parts for name in instance_part_names)
 
     def set_project(self, project: CAEProject) -> None:
         """Replace the current definition and reset its reversible history."""
@@ -253,7 +317,8 @@ class Workbench(QWidget):
         self._editor_dirty = False
         self._definition_revision = 0
         self._invalidate_mesh_cache()
-        self._seed_discrete_mesh_cache()
+        self._seed_loaded_cad_mesh_cache()
+        self._update_view_tabs()
         self.mesh_size.setValue(project.mesh_size)
         self.reload()
         self._preview_timer.start()
@@ -284,7 +349,11 @@ class Workbench(QWidget):
             # second history container added no behavior and only made every
             # feature take one extra click to reach.
             for operation in part.geometry.operations:
-                inputs = f" ← {', '.join(operation.inputs)}" if operation.inputs else ""
+                inputs = (
+                    f" ← {', '.join(operation.input_ids)}"
+                    if operation.input_ids
+                    else ""
+                )
                 self._node(f"{operation.id} · {self._operation_name(operation.kind)}{inputs}",
                            ("feature", index, operation.id), geometry)
             materials = self._node(T("材料", "Materials"), ("materials", index), item)
@@ -573,6 +642,8 @@ class Workbench(QWidget):
             name in self._mesh_parts for name in instance_part_names)
         self.view_tabs.setTabEnabled(1, part_available)
         self.view_tabs.setTabEnabled(3, all_available)
+        if hasattr(self, "submit"):
+            self.submit.setEnabled(self._all_instance_parts_meshed())
         current = self.view_tabs.currentIndex()
         if current == 1 and not part_available:
             self.view_tabs.setCurrentIndex(0)
@@ -606,11 +677,15 @@ class Workbench(QWidget):
         elif self._view_mode == "assembly_geometry":
             if not self._brep_assembly_records:
                 raise RuntimeError("BREP cache is missing assembly geometry.")
+            boundary_records, couple_records = self._constraint_visual_records(
+                visible_records=self._brep_assembly_records)
             self.preview.show_brep(
                 self._brep_assembly_records,
                 reference_points=self._reference_point_records(),
                 load_records=self._load_visual_records(
-                    visible_records=self._brep_assembly_records))
+                    visible_records=self._brep_assembly_records),
+                boundary_records=boundary_records,
+                couple_records=couple_records)
             self.preview.highlight_entity(self._preview_highlight)
             self.preview_mode.setText(T("装配体几何", "Assembly Geometry"))
         elif self._view_mode == "part_mesh":
@@ -624,12 +699,15 @@ class Workbench(QWidget):
             if not all(part_item.name in self._mesh_parts for part_item in self.project.parts):
                 self.preview.clear_scene()
                 return
-            if self._assembly_mesh_controller is None:
-                self._assembly_mesh_controller = self._cached_assembly_view()
+            if self._assembly_mesh_view is None:
+                self._assembly_mesh_view = self._cached_assembly_view()
+            boundary_records, couple_records = self._constraint_visual_records()
             self.preview.show_controller(
-                self._assembly_mesh_controller, brep=False,
+                self._assembly_mesh_view, brep=False,
                 reference_points=self._reference_point_records(),
-                load_records=self._load_visual_records())
+                load_records=self._load_visual_records(),
+                boundary_records=boundary_records,
+                couple_records=couple_records)
             self.preview_mode.setText(T("装配体网格", "Assembly Mesh"))
 
     def _cached_assembly_view(self):
@@ -659,6 +737,133 @@ class Workbench(QWidget):
             for definition in self.project.reference_points
         ]
 
+    def _constraint_visual_records(self, visible_records=None):
+        """Build display-only markers for boundaries and node couplings."""
+        instances = {item.name: item for item in self.project.instances}
+        parts = {item.name: item for item in self.project.parts}
+        reference_points = {
+            item.name: np.asarray(item.point, dtype=float).reshape(3)
+            for item in self.project.reference_points
+        }
+
+        def limited(values, maximum=48):
+            values = np.asarray(values, dtype=float).reshape(-1, 3)
+            if len(values):
+                values = np.unique(values, axis=0)
+            if len(values) <= maximum:
+                return values
+            return values[np.linspace(0, len(values) - 1, maximum, dtype=int)]
+
+        def records_for(instance_name, part_name_value):
+            if visible_records is None:
+                return []
+            part_definition = parts[part_name_value]
+            return [record for record in visible_records
+                    if record.get("part_name") == part_definition.name
+                    and (record.get("instance_name") in (None, instance_name))]
+
+        def set_selection(part_definition, set_name):
+            if set_name == "all":
+                return "all"
+            if set_name == "surface_all":
+                return "surface_all"
+            if set_name.endswith("_nodes") and set_name.startswith("surface_"):
+                surface_name = set_name[len("surface_"):-len("_nodes")]
+                match = next((item for item in part_definition.surface_sets
+                              if item.name == surface_name), None)
+                return match.selection if match is not None else "surface_all"
+            match = next((item for item in part_definition.node_sets
+                          if item.name == set_name), None)
+            return match.selection if match is not None else "all"
+
+        def target_points(instance_name, set_name):
+            instance = instances.get(instance_name)
+            if instance is None:
+                return np.empty((0, 3))
+            part_definition = parts.get(instance.part_name)
+            if part_definition is None:
+                return np.empty((0, 3))
+            native_part = self._mesh_parts.get(part_definition.name)
+            if native_part is not None and visible_records is None:
+                selection = set_selection(part_definition, set_name)
+                if selection == "all":
+                    indices = np.arange(len(native_part.nodes), dtype=int)
+                elif set_name in native_part.set_nodes:
+                    indices = np.asarray(native_part.set_nodes[set_name], dtype=int)
+                elif selection == "surface_all" and "surface_all" in native_part.set_nodes:
+                    indices = np.asarray(native_part.set_nodes["surface_all"], dtype=int)
+                else:
+                    try:
+                        indices = parse_indices(selection)
+                    except (TypeError, ValueError):
+                        indices = np.empty(0, dtype=int)
+                indices = indices[(indices >= 0) & (indices < len(native_part.nodes))]
+                points = native_part.nodes.detach().cpu().numpy()[indices]
+                points = self._transform_points(points, instance.translation, instance.rotation)
+                return limited(points)
+
+            selection = set_selection(part_definition, set_name)
+            records = records_for(instance_name, part_definition.name)
+            if selection in {"all", "surface_all", "cad:all"}:
+                points = [_brep_face_points(record) for record in records]
+                return limited(np.concatenate(points) if points else [])
+            if selection.startswith(("cad:vertex:", "gmsh:vertex:")):
+                tag = int(selection.rsplit(":", 1)[1])
+                points = [point for record in records
+                          for vertex_tag, point in zip(
+                              record.get("vertex_tags", []), record.get("vertex_points", []))
+                          if int(vertex_tag) == tag]
+                return limited(points)
+            if selection.startswith(("cad:surface:", "gmsh:surface:")):
+                tag = int(selection.rsplit(":", 1)[1])
+                points = [_brep_face_points(record) for record in records
+                          if int(record.get("surface_tag", -1)) == tag]
+                return limited(np.concatenate(points) if points else [])
+            # A BREP has no analysis nodes before meshing.  For selections
+            # without a CAD topology tag, face centers are the stable
+            # fallback; explicit CAD faces/vertices were handled above.
+            centers = [np.mean(_brep_face_points(record), axis=0)
+                       for record in records if len(_brep_face_points(record))]
+            return limited(centers)
+
+        def applies_to_part(instance_name):
+            return instance_name in instances
+
+        boundary_records = []
+        for boundary in self.project.boundaries:
+            if not boundary.enabled:
+                continue
+            if boundary.kind == "reference_point":
+                if boundary.reference_point in reference_points:
+                    boundary_records.append({
+                        "name": boundary.name,
+                        "point": reference_points[boundary.reference_point],
+                        "dofs": boundary.dofs,
+                    })
+                continue
+            if not applies_to_part(boundary.instance):
+                continue
+            for point in target_points(boundary.instance, boundary.node_set):
+                boundary_records.append({
+                    "name": boundary.name, "point": point, "dofs": boundary.dofs,
+                })
+
+        couple_records = []
+        for constraint in self.project.constraints:
+            if not constraint.enabled or not applies_to_part(constraint.instance):
+                continue
+            target = reference_points.get(constraint.reference_point)
+            if target is None:
+                continue
+            points = target_points(constraint.instance, constraint.node_set)
+            if len(points):
+                couple_records.append({
+                    "name": constraint.name,
+                    "points": points,
+                    "reference_point": target,
+                })
+        return boundary_records, couple_records
+
     def _load_visual_records(self, part_name=None, visible_records=None, mesh_part=None):
         """Build display-only arrows and links for the current viewport.
 
@@ -685,7 +890,7 @@ class Workbench(QWidget):
         if visible_records:
             grouped = {}
             for record in visible_records:
-                points = np.asarray(record.get("points", []), dtype=float)
+                points = _brep_face_points(record)
                 if points.ndim != 2 or points.shape[1] != 3 or not len(points):
                     continue
                 key = record.get("instance_name") or record.get("part_name") or part_name
@@ -758,7 +963,7 @@ class Workbench(QWidget):
                 raise ValueError(
                     f"Surface set '{load.target}' is missing on Part '{target_part.name}'.")
             selection = surface.selection if surface is not None else ""
-            if selection.startswith("gmsh:surface:"):
+            if selection.startswith(("cad:surface:", "gmsh:surface:")):
                 target_tag = int(selection.rsplit(":", 1)[1])
             if target_tag is not None:
                 filtered = [record for record in candidates
@@ -874,6 +1079,7 @@ class Workbench(QWidget):
         self._mesh_parts = {}
         self._seed_discrete_mesh_cache()
         self._assembly_mesh_controller = None
+        self._assembly_mesh_view = None
         if clear_brep:
             self._brep_part_records = {}
             self._brep_assembly_records = []
@@ -904,10 +1110,19 @@ class Workbench(QWidget):
             if native_part is not None:
                 self._mesh_parts[definition.name] = native_part
 
+    def _seed_loaded_cad_mesh_cache(self) -> None:
+        """Expose a CAD Part mesh restored from a saved native controller."""
+        for definition in self.project.parts:
+            if definition.geometry.source.casefold() == "cad":
+                native_part = definition.geometry.runtime_part
+                if native_part is not None:
+                    self._mesh_parts[definition.name] = native_part
+
     def _mesh_part(self, part_index: int) -> None:
         definition = self.project.parts[part_index]
         self._mesh_parts.pop(definition.name, None)
         self._assembly_mesh_controller = None
+        self._assembly_mesh_view = None
         if self._view_mode in {"part_mesh", "assembly_mesh"}:
             self.preview.clear_scene()
         self._update_view_tabs()
@@ -920,8 +1135,19 @@ class Workbench(QWidget):
                 self._mesh_parts[definition.name] = native_part
                 status = T(f"{definition.name} 已有离散网格", f"{definition.name} already has a discrete mesh")
             else:
+                history = CADHistory(
+                    definition.geometry.operations,
+                    mesh_size=self.project.mesh_size,
+                    exterior_surface=definition.exterior_surface,
+                )
+                for item in definition.node_sets:
+                    history.add_node_set(item.name, cad_selector(item.selection))
+                for item in definition.element_sets:
+                    history.add_element_set(item.name, cad_selector(item.selection))
+                for item in definition.surface_sets:
+                    history.add_surface_set(item.name, cad_selector(item.selection))
                 self._mesh_parts[definition.name] = create_part(
-                    definition.geometry.operations, self.project.mesh_size)
+                    history, self.project.mesh_size)
                 status = T(f"{definition.name} 网格已生成", f"Mesh generated for {definition.name}")
             self._update_view_tabs()
             self.view_tabs.setCurrentIndex(1)
@@ -1011,6 +1237,19 @@ class Workbench(QWidget):
             }
             if self.view_tabs.currentIndex() != 0:
                 self.view_tabs.setCurrentIndex(0)
+        elif kind == "set" and data[2] == "surface_sets":
+            part = self.project.parts[data[1]]
+            surface = part.surface_sets[data[3]]
+            selection = str(surface.selection).strip()
+            if selection.startswith(("cad:surface:", "gmsh:surface:")):
+                self._preview_highlight = {
+                    "part_name": part.name,
+                    "surface_tag": int(selection.rsplit(":", 1)[1]),
+                }
+                if self.view_tabs.currentIndex() != 0:
+                    self.view_tabs.setCurrentIndex(0)
+            else:
+                self._preview_highlight = None
         elif kind == "rp":
             # Reference points are assembly objects; switch to the assembly
             # geometry view so their world coordinates are immediately visible.
@@ -1253,14 +1492,22 @@ class Workbench(QWidget):
         fields = {}
         if context == "feature":
             form.addRow(T("特征", "Feature"), QLabel(f"{operation.id} · {self._operation_name(operation.kind)}"))
-            if operation.kind == "step_import":
-                form.addRow(T("文件", "File"), QLabel(str(operation.values.get("filename", "STEP"))))
+            if isinstance(operation, StepImport):
+                form.addRow(T("文件", "File"), QLabel(operation.filename))
                 form.addRow(T("状态", "Status"), QLabel(
                     T("文件内容已嵌入模型", "File content is embedded in the model")))
-            elif operation.kind in {"fuse", "cut", "intersect", "fragment"}:
-                form.addRow(T("输入特征", "Input features"), QLabel(", ".join(operation.inputs)))
+            elif isinstance(operation, BooleanOperation):
+                form.addRow(
+                    T("对象特征", "Object feature"),
+                    QLabel(operation.object_id),
+                )
+                form.addRow(
+                    T("工具特征", "Tool feature"),
+                    QLabel(operation.tool_id),
+                )
             else:
-                for key, value in operation.values.items():
+                for key in operation.parameter_names:
+                    value = getattr(operation, key)
                     widget = self._number(value, 1e-10 if "radius" in key else -1e12, 1e12)
                     fields[key] = widget
                     form.addRow(key, widget)
@@ -1268,7 +1515,7 @@ class Workbench(QWidget):
         def update_live_preview(*_):
             """Update the BREP preview without generating a volume mesh."""
             for field_name, field in fields.items():
-                operation.values[field_name] = field.value()
+                setattr(operation, field_name, field.value())
             self._preview_timer.start()
 
         def commit_live_values():
@@ -1280,12 +1527,12 @@ class Workbench(QWidget):
         for field in fields.values():
             field.valueChanged.connect(update_live_preview)
             field.editingFinished.connect(commit_live_values)
-        if context == "feature" and operation.kind != "step_import":
+        if context == "feature" and fields:
             save = QPushButton(T("应用 CAD 特征", "Apply CAD feature"))
             save.clicked.connect(lambda: self._save_feature(index, operation.id, fields))
             layout.addWidget(save)
         # Adding a primitive/boolean/transform is a geometry-level action.
-        # When a concrete history node such as ``Base-1: box`` is selected,
+        # When a concrete history node such as ``Box-1`` is selected,
         # keep the card focused on editing that feature instead of showing
         # actions that belong to the parent Geometry node.
         geometry_context = context == "geometry"
@@ -1714,9 +1961,13 @@ class Workbench(QWidget):
         self._active_tree_data = ("material", part_index, n - 1)
         self._changed(T("已添加材料", "Material added"))
     def _add_set(self, part_index, kind):
-        n = len(getattr(self.project.parts[part_index], kind)) + 1
+        part = self.project.parts[part_index]
+        n = len(getattr(part, kind)) + 1
         prefix = {"node_sets": "Nset", "element_sets": "Elset", "surface_sets": "Surface"}[kind]
-        getattr(self.project.parts[part_index], kind).append(NamedSet(f"{prefix}-{n}", "0" if kind != "surface_sets" else "0:1")); self._changed(T("已添加集合", "Set added"))
+        selector = "cad:all" if part.geometry.source.casefold() == "cad" else (
+            "0" if kind != "surface_sets" else "0:1")
+        getattr(part, kind).append(NamedSet(f"{prefix}-{n}", selector))
+        self._changed(T("已添加集合", "Set added"))
 
     def merge_parts(self):
         """Create one OCC *union* Part from two untransformed source Parts."""
@@ -1778,9 +2029,8 @@ class Workbench(QWidget):
             original = source.geometry.operations
             mapping = {operation.id: f"{prefix}_{operation.id}" for operation in original}
             for operation in original:
-                operations.append(CADOperation(mapping[operation.id], operation.kind,
-                                               copy.deepcopy(operation.values),
-                                               [mapping[input_id] for input_id in operation.inputs]))
+                operations.append(operation.copy_with_mapped_ids(
+                    mapping[operation.id], mapping))
             # A source Part can legitimately contain several disconnected
             # leaf features.  Fold them to one feature before the final
             # cross-Part boolean so none is silently dropped.
@@ -1794,11 +2044,11 @@ class Workbench(QWidget):
             final = leaves[0]
             for leaf_index, leaf in enumerate(leaves[1:], start=2):
                 joined = f"{prefix}_Fuse-leaf-{leaf_index}"
-                operations.append(CADOperation(joined, "fuse", {}, [final, leaf]))
+                operations.append(Fuse(joined, final, leaf))
                 final = joined
             finals.append(final)
         merged_name = f"{object_name}_Union_{tool_name}"
-        operations.append(CADOperation(f"{kind.title()}-Merged", kind, {}, finals))
+        operations.append(Fuse(f"{kind.title()}-Merged", finals[0], finals[1]))
         merged = PartDefinition(name=merged_name,
                                 geometry=type(source_a.geometry)(operations=operations),
                                 materials=copy.deepcopy(source_a.materials),
@@ -1867,7 +2117,8 @@ class Workbench(QWidget):
     def _save_feature(self, part_index, feature_id, fields):
         operation = next(op for op in self.project.parts[part_index].geometry.operations
                          if op.id == feature_id)
-        for key, field in fields.items(): operation.values[key] = field.value()
+        for key, field in fields.items():
+            setattr(operation, key, field.value())
         self._changed(T("CAD 特征已保存", "CAD feature saved"))
 
     def _add_primitive(self, part_index, kind=None):
@@ -1881,7 +2132,7 @@ class Workbench(QWidget):
             raise ValueError(f"Unknown primitive kind: {kind}")
         operations = self.project.parts[part_index].geometry.operations
         identifier = f"{kind.title()}-{sum(op.kind == kind for op in operations) + 1}"
-        operations.append(CADOperation(identifier, kind, primitive_defaults(kind)))
+        operations.append(_PRIMITIVE_OPERATION_TYPES[kind](identifier))
         self._active_tree_data = ("feature", part_index, identifier)
         self._changed(T("已添加 OCC 基本体", "OCC primitive added"))
 
@@ -1914,7 +2165,7 @@ class Workbench(QWidget):
                                                  T("工具", "Tool"), [item for item in sources if item != first], 0, False)
         if not accepted: return
         identifier = f"{kind.title()}-{sum(op.kind == kind for op in operations) + 1}"
-        operations.append(CADOperation(identifier, kind, {}, [first, second]))
+        operations.append(_BOOLEAN_OPERATION_TYPES[kind](identifier, first, second))
         self._active_tree_data = ("feature", part_index, identifier)
         self._changed(T("已添加 OCC 布尔特征", "OCC boolean feature added"))
 
@@ -1938,14 +2189,18 @@ class Workbench(QWidget):
                                                  T("输入特征", "Input feature"), sources, 0, False)
         if not accepted: return
         identifier = f"{kind.title()}-{sum(op.kind == kind for op in operations) + 1}"
-        operations.append(CADOperation(identifier, kind, transform_defaults(kind), [source]))
+        operations.append(_TRANSFORM_OPERATION_TYPES[kind](identifier, source))
         self._active_tree_data = ("feature", part_index, identifier)
         self._changed(T("已添加 OCC 变换特征", "OCC transform feature added"))
 
     @staticmethod
     def _live_feature_ids(operations) -> list[str]:
         """Return history leaves that currently own live OCC entities."""
-        consumed = {input_id for operation in operations for input_id in operation.inputs}
+        consumed = {
+            input_id
+            for operation in operations
+            for input_id in operation.input_ids
+        }
         return [operation.id for operation in operations if operation.id not in consumed]
 
     def _delete_feature(self, part_index, feature_id):
@@ -1955,7 +2210,7 @@ class Workbench(QWidget):
                 self, T("无法删除", "Cannot delete"),
                 T("Part 至少需要一个 CAD 特征。", "A Part needs at least one CAD feature."))
             return
-        if any(feature_id in op.inputs for op in operations):
+        if any(feature_id in op.input_ids for op in operations):
             QMessageBox.warning(self, T("无法删除", "Cannot delete"),
                                 T("该特征被布尔运算引用，请先删除依赖特征。", "This feature is used by a boolean operation; delete its dependent feature first."))
             return
@@ -1976,6 +2231,12 @@ class Workbench(QWidget):
                 self, T("名称重复", "Duplicate name"),
                 T("表面集不能使用 Part 外表面的名称。", "A surface set cannot use the Part exterior-surface name.")); return
         part = self.project.parts[p]
+        if part.geometry.source.casefold() == "cad":
+            try:
+                cad_selector(text)
+            except ValueError as exc:
+                QMessageBox.warning(
+                    self, T("CAD 选择无效", "Invalid CAD selection"), str(exc)); return
         collection = getattr(part, kind)
         previous = collection[i].name
         collection[i] = NamedSet(name, text)
@@ -2253,6 +2514,7 @@ class Workbench(QWidget):
             self.message.setText(T("生成 FE 网格…", "Generating FE mesh…"))
             controller = build_controller(self.project)
             self._assembly_mesh_controller = controller
+            self._assembly_mesh_view = None
             self._mesh_parts = dict(controller.assembly._parts)
             self._update_view_tabs()
             self.view_tabs.setCurrentIndex(3)
@@ -2362,13 +2624,13 @@ class Workbench(QWidget):
                     volumes = entity.get("volume_tags", [])
                     if not volumes:
                         raise ValueError("The selected BREP face has no owning volume.")
-                    selection = f"gmsh:volume:{int(volumes[0])}"
+                    selection = f"cad:volume:{int(volumes[0])}"
                 elif kind == "node_sets" and "vertex_tag" in entity:
-                    selection = f"gmsh:vertex:{int(entity['vertex_tag'])}"
+                    selection = f"cad:vertex:{int(entity['vertex_tag'])}"
                 else:
                     # A BREP face maps to its complete analysis-surface node
                     # set or its complete element-face surface after meshing.
-                    selection = f"gmsh:surface:{tag}"
+                    selection = f"cad:surface:{tag}"
             elif kind == "node_sets":
                 selection = self._format_indices(np.append(parse_indices(item.selection), entity["node_id"]))
             elif kind == "element_sets":

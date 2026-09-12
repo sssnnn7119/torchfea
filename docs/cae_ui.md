@@ -14,29 +14,35 @@ python -m torchfea.ui
 conda run -n mine --no-capture-output python -m torchfea.ui
 ```
 
-界面分为两个页面。前处理页面的模型树依次定义零件、OCC 几何特征、材料、节点集、单元集、表面集、装配实例、参考点、边界条件、载荷和静力隐式求解器；模型树上方的过滤框可按名称或类型快速定位对象。右侧有四个互相独立的视图：`Part Geometry`、`Part Mesh`、`Assembly Geometry`、`Assembly Mesh`。几何视图只显示 BREP 的点、OCC 曲线和实体面，所有未选中的面使用统一 CAD 面色并通过 OCC 边界线区分（面上的临时三角剖分不会作为网格线显示）；网格视图只显示有限元外表面的三角面片；Part 网格要在该 Part 的“剖分此 Part”完成后才能进入，Assembly 网格则要求所有 Part 都已剖分。装配体几何和网格视图会显示参考点标记。几何尺寸、OCC 特征或实例平移/转角在修改后会自动刷新 BREP（350 ms 防抖），同时使旧网格视图失效。拖拽鼠标直接旋转视图，滚轮缩放，中键拖拽平移；“充满视图”会将模型居中并缩放到当前窗口，`前/后/左/右/顶/底/等轴`按钮切换标准视角，“线框”和“边线”用于检查拓扑。视图中还显示带刻度的 XYZ 坐标轴。通过“新增零件”创建的零件会自动带一个 instance。前处理右下角“进入后处理”只提交当前已应用的定义；后处理页的“1 · 开始计算”才生成有限元对象并提交求解，完成后可重新计算，或用“返回前处理”继续编辑。
+界面分为两个页面。前处理页面的模型树依次定义零件、OCC 几何特征、材料、节点集、单元集、表面集、装配实例、参考点、边界条件、载荷和静力隐式求解器；模型树上方的过滤框可按名称或类型快速定位对象。右侧有四个互相独立的视图：`Part Geometry`、`Part Mesh`、`Assembly Geometry`、`Assembly Mesh`。几何视图只显示 BREP 的点、OCC 曲线和实体面，所有未选中的面使用统一 CAD 面色并通过 OCC 边界线区分（面上的临时三角剖分不会作为网格线显示）；网格视图只显示有限元外表面的三角面片；Part 网格要在该 Part 的“剖分此 Part”完成后才能进入，Assembly 网格则要求所有 Part 都已剖分。装配体几何和网格视图会显示参考点标记。几何尺寸、OCC 特征或实例平移/转角在修改后会自动刷新 BREP（350 ms 防抖），同时使旧网格视图失效。拖拽鼠标直接旋转视图，滚轮缩放，中键拖拽平移；“充满视图”会将模型居中并缩放到当前窗口，`前/后/左/右/顶/底/等轴`按钮切换标准视角，“线框”和“边线”用于检查拓扑。视图中还显示带刻度的 XYZ 坐标轴。通过“新增零件”创建的零件会自动带一个 instance。前处理右下角“进入后处理”只提交当前已应用的定义和已生成的网格；未完成剖分不能进入计算，后处理页直接使用已提交网格求解，完成后可重新计算，或用“返回前处理”继续编辑。
 
-“统一网格尺寸”是项目级唯一的体网格密度。点击“生成 FE 网格”或后处理页的“1 · 开始计算”时，所有 Part 以同一尺寸调用 Gmsh 三维剖分；此后才会显示有限元网格。前处理的“进入后处理”只切换页面，不会提前剖分或求解。修改几何后，预览自动返回 BREP。工具栏的撤回/重做记录所有已应用的 CAD 特征和模型定义操作。数值框会立即更新 BREP；一个数值编辑结束时自动形成一个撤回步骤，不必为保留历史专门点击“应用”。每个 Part 的“几何 / 网格”节点下直接列出 CAD 特征；选中某一项可直接编辑该特征，应用后仍保持当前树位置和展开状态。
+“统一网格尺寸”是项目级唯一的体网格密度。点击“生成 FE 网格”时，所有 Part 以同一尺寸调用 Gmsh 三维剖分；此后才会显示有限元网格。未生成完整实例网格时不能进入后处理。后处理页的“1 · 开始计算”直接使用前处理生成的原生网格控制器，不会再次调用 Gmsh。修改几何后，预览自动返回 BREP。工具栏的撤回/重做记录所有已应用的 CAD 特征和模型定义操作。数值框会立即更新 BREP；一个数值编辑结束时自动形成一个撤回步骤，不必为保留历史专门点击“应用”。每个 Part 的“几何 / 网格”节点下直接列出 CAD 特征；选中某一项可直接编辑该特征，应用后仍保持当前树位置和展开状态。
 
-当前的真实几何入口是内核中的 `torchfea.cad` Gmsh OCC 特征历史。CAD 历史属于 `FEAController.cad`，按 Part 名称保存离散构造过程；离散后的 `Part` 只包含节点、单元和集合。由 INP 创建的原生 `.npz` 可能没有 `FEAController.cad`，这类 Part 会在 UI 中标记为“离散几何 / 网格”，直接读取已有节点、单元、材料和集合，不虚构 CAD 历史，也不调用 Gmsh 重剖分；它的网格可直接进入 Part/Assembly Mesh 视图，集合需直接编辑文本而不能进行 BREP 拾取。UI 只编辑并提交 `CADOperation`，不再拥有另一份 CAD 实现。点击 CAD Part 下的“几何 / 网格”节点才显示“添加基本体 / 布尔运算 / 变换 / 剖分此 Part”；点击具体的 `Base-1` 等特征时，右侧只保留该特征的属性编辑，避免混淆操作上下文：
+当前的真实几何入口是内核中的 `torchfea.cad` Gmsh OCC 特征历史。CAD 历史属于 `FEAController.cad`，按 Part 名称保存离散构造过程；离散后的 `Part` 只包含节点、单元和集合。由 INP 创建的原生 `.npz` 可能没有 `FEAController.cad`，这类 Part 会在 UI 中标记为“离散几何 / 网格”，直接读取已有节点、单元、材料和集合，不虚构 CAD 历史，也不调用 Gmsh 重剖分；它的网格可直接进入 Part/Assembly Mesh 视图，集合需直接编辑文本而不能进行 BREP 拾取。每个 CAD 特征都是明确的 Python 类，例如 `Box`、`Cut` 和 `Rotate`，参数是对象的显式属性，不使用 `kind + values` 字典。每个操作通过 `apply_occ()` 实现自己的 Gmsh OCC 行为，统一的 `OCCBuilder` 只负责历史依赖校验、已消费特征和 OCC 实体生命周期。UI 直接编辑并提交这些内核对象，不再拥有另一份 CAD 实现。点击 CAD Part 下的“几何 / 网格”节点才显示“添加基本体 / 布尔运算 / 变换 / 剖分此 Part”；点击具体的 `Box-1` 等特征时，右侧只保留该特征的属性编辑，避免混淆操作上下文：
 
 也可以绕过 UI 直接构造同一份模型：
 
 ```python
 from torchfea import FEAController
-from torchfea.cad import CADHistory
+from torchfea.cad import Box, Cylinder, Cut
 
 fe = FEAController()
 cad = fe.cad.add_part("Part-1")
-box = cad.add_box(dx=20, dy=10, dz=5)
-tool = cad.add_cylinder(x=10, y=5, radius=2, dz=5)
-cad.cut(box.id, tool.id)
+cad.add(Box("Box-1", dx=20, dy=10, dz=5))
+cad.add(Cylinder("Cylinder-1", x=10, y=5, radius=2, dz=5))
+cad.add(Cut("Cut-1", object_id="Box-1", tool_id="Cylinder-1"))
 part = fe.cad.mesh_part("Part-1", mesh_size=1.5)
 # fe.cad.parts["Part-1"].operations 会随 FEAController.save_model 保存。
 # fe.cad.parts["Part-1"].import_step("bracket.step") 会把 STEP 内容嵌入历史。
 ```
 
+也可以使用签名同样明确的便捷方法 `cad.add_box(...)`、`cad.add_cylinder(...)` 和 `cad.cut(...)`；它们返回的仍分别是 `Box`、`Cylinder` 和 `Cut` 对象。
+
 `torchfea.load_model` 会恢复 `FEAController.cad`。
+
+CAD 集合也属于这份历史。例如 `history.add_surface_set("top", 7)`、
+`history.add_node_set("corner", 12)` 和 `history.add_element_set("body", 3)`
+分别记录 OCC 面、顶点和体的选择；这些整数是 OCC 拓扑标签，不是网格节点号或单元号。调用 `mesh()` 或构造求解器时，内核才把它们投影到当前网格。
 
 - 基本体：`Box`、`Wedge`、`Cylinder`、`Sphere`、`Cone`、`Torus`。
 - 外部几何：STEP 导入会作为 Part 的 `step_import` 特征保存，内容随原生模型序列化。
@@ -44,11 +50,11 @@ part = fe.cad.mesh_part("Part-1", mesh_size=1.5)
 - Part 内变换：`Translate`、`Rotate`、`Dilate`（非均匀缩放）、`Mirror`。它们直接改变 OCC 特征历史，和 assembly instance 的显示/装配变换是两层不同概念。
 - 跨 Part 并集：工具栏“Part 并集合并”固定调用 OCC `fuse`，把两个未施加 instance 平移/转角的 Part 合并为一个带并集特征历史的新 Part；差集、交集和分割在 `FEAController.cad` 的 Part 历史中完成。
 
-跨 Part 合并会更改 Gmsh 实体编号，所以若源 Part 已存在节点集、单元集、表面集、边界或载荷，界面会拒绝操作，避免悄悄破坏选择定义。合并后重新在 BREP 中拾取这些集合即可。
+CAD 集合属于 Part 的 CAD 历史，而不是网格历史。布尔或变换后，历史中的拓扑选择会在新的 OCC 结果上重新解析；只有生成有限元对象时，才把这些选择映射为节点、单元和面集合。
 
-自定义节点集和单元集使用零基编号，例如 `0, 3:8, 12`；区间包含两端。自定义表面集使用 `单元号:面号`，如 `0:1, 2:3`，面号从 1 起计。每个 Part 都有一个自动汇总全部外部面的外表面，默认名为 `extern`；它位于 Part 上，只能重命名，不能删除。剖分后系统生成 `all`（全部节点）、`all`（全部单元）和 `surface_all`（全部外表面节点）。每个自定义 surface 另外生成唯一的 `surface_<表面名>_nodes` 节点集；外表面不再额外生成重复的节点集。系统集合只读，不能被自定义集合覆盖。Instance 只定义所属 Part、平移和转角，显示时自动使用所属 Part 的外表面。
+CAD Part 的节点集、单元集和表面集保存为 `cad:vertex:<tag>`、`cad:volume:<tag>`、`cad:surface:<tag>` 等 OCC 拓扑选择，不保存网格节点号或单元面号。离散 Part 才使用零基编号，例如 `0, 3:8, 12`，以及 `单元号:面号` 表面语法。每个 Part 都有一个自动汇总全部外部面的外表面，默认名为 `extern`；它位于 Part 上，只能重命名，不能删除。剖分后系统生成 `all`（全部节点）、`all`（全部单元）和 `surface_all`（全部外表面节点）；每个自定义 surface 另外生成 `surface_<表面名>_nodes`。这些 FE 集合是 CAD 选择的网格投影，不是 CAD 定义本身。
 
-创建一个集合后，选中该集合并使用“从预览选节点 / 体 / 面”：界面会自动切换到当前 Part 的 BREP 预览并进入对应选择模式。CAD 顶点以白色小球明确标识，仅在“选节点”模式下可拾取；选中后变为橙黄色。节点集合点击该顶点后会在最终剖分时解析为对应 Gmsh 顶点节点；单元集合点击 BREP 体后会解析为该体的全部单元；表面集合点击独立的 BREP 面后会解析为对应单元面。当前选中的 BREP 曲面显示为红色，并在集合写入后保持高亮；模型树中的 Part 外表面会将该 Part 的全部 BREP 子面同时标红。选择结束后视图自动回到拖拽导航模式。
+创建一个集合后，选中该集合并使用“从预览选节点 / 体 / 面”：界面会自动切换到当前 Part 的 BREP 预览并进入对应选择模式。CAD 顶点以白色小球明确标识，仅在“选节点”模式下可拾取；选中后变为橙黄色。最终 FE 网格生成时，CAD 选择才解析为节点、单元和面。当前选中的 BREP 曲面显示为红色，并在集合写入后保持高亮；模型树中的 Part 外表面会将该 Part 的全部 BREP 子面同时标红。
 
 材料位于 Part 子节点下。选中“材料”根节点可单独设置该 Part 材料集合的密度；密度会写入所有元素块并用于质量矩阵。支持线弹性、Neo-Hookean 和 Neo-Hookean lnJ；每个材料通过一个单元集分配，多个材料不能重叠且必须覆盖该 Part 的全部单元。新增对象统一从模型树右键菜单创建；在“零件”节点右键可导入 `.stp`/`.step`，导入文件内容会嵌入 CAD 历史并自动创建 Part 和 Instance，不依赖原始路径。选中 Part 后可在属性页或右键菜单导出其 OCC BREP 为 `.stp`/`.step`，该操作不生成有限元网格。顶栏提供新建、打开、保存、INP 导出和撤回。边界、耦合、材料和载荷中的 Part/Instance/集合/表面/参考点引用均使用下拉框，只能选择当前已经定义的对象；修改实例后，节点集和表面目标列表会自动刷新。载荷类型包括压力、体力、集中力、力矩、参考点弹簧、自由度罚函数、自接触和接触；目标和参数会按类型显示。边界条件支持实例节点集上的 U1/U2/U3 约束以及参考点的 U1/U2/U3、R1/R2/R3 约束；约束节点提供参考点耦合。单元集已经可用于材料分配、选择和 `.inp` 导出。
 

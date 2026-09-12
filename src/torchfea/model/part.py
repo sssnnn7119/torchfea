@@ -122,6 +122,8 @@ class Part(Serializable):
 
     _serialized_attributes_exclude = [
         'mass_matrix_indices', 'mass_matrix_values', 'mid_pt_idxmap_torch',
+        '_gmsh_surface_sets', '_gmsh_surface_nodes',
+        '_gmsh_volume_elements', '_gmsh_vertex_nodes',
     ]
 
 

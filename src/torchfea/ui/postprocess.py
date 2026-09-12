@@ -16,23 +16,22 @@ from PySide6.QtWidgets import (
 )
 
 from .i18n import T
-from .model import CAEProject, build_controller
+from .model import CAEProject
 
 
 class _SolveWorker(QObject):
     finished = Signal(object, object, object)
     failed = Signal(str)
 
-    def __init__(self, project: CAEProject):
+    def __init__(self, controller):
         super().__init__()
-        self.project = project
+        self.controller = controller
 
     def run(self) -> None:
         try:
-            controller = build_controller(self.project)
-            result = controller.solve()
-            result_fields = _compute_result_fields(controller, result)
-            self.finished.emit(controller, result, result_fields)
+            result = self.controller.solve()
+            result_fields = _compute_result_fields(self.controller, result)
+            self.finished.emit(self.controller, result, result_fields)
         except Exception:
             self.failed.emit(traceback.format_exc())
 
@@ -536,7 +535,10 @@ class VTKMeshViewer(QFrame):
         self._section_plane.SetOrigin(*origin)
         self._section_plane.SetNormal(*normal)
         for actor, metadata in self._iter_actors():
-            if metadata.get("is_reference_point") or metadata.get("is_load_glyph"):
+            if (metadata.get("is_reference_point")
+                    or metadata.get("is_load_glyph")
+                    or metadata.get("is_boundary_glyph")
+                    or metadata.get("is_couple_link")):
                 continue
             mapper = actor.GetMapper()
             if mapper is None:
@@ -709,6 +711,75 @@ class VTKMeshViewer(QFrame):
         }
         self._actors_by_id[id(actor)] = actor
 
+    def _add_boundary_glyphs(self, boundary_records) -> None:
+        """Draw one small three-sided marker at every constrained node."""
+        if not self._available or self._renderer is None:
+            return
+        records = list(boundary_records or [])
+        if not records:
+            return
+        from vtkmodules.vtkFiltersSources import vtkConeSource
+        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+        span = 1.0
+        if self._scene_bounds is not None:
+            span = max(
+                self._scene_bounds[1] - self._scene_bounds[0],
+                self._scene_bounds[3] - self._scene_bounds[2],
+                self._scene_bounds[5] - self._scene_bounds[4],
+                1e-6,
+            )
+        radius = max(span * .014, 1e-4)
+        for record in records:
+            point = np.asarray(record.get("point"), dtype=float).reshape(-1)
+            if point.size != 3 or not np.all(np.isfinite(point)):
+                continue
+            marker = vtkConeSource()
+            marker.SetCenter(*point)
+            marker.SetDirection(0.0, 0.0, 1.0)
+            marker.SetRadius(radius)
+            marker.SetHeight(radius * 1.8)
+            marker.SetResolution(3)
+            marker.Update()
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(marker.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(1.0, .22, .12)
+            actor.GetProperty().SetEdgeColor(1.0, .82, .25)
+            actor.GetProperty().SetEdgeVisibility(True)
+            actor.GetProperty().SetLineWidth(1.2)
+            actor.GetProperty().SetLighting(False)
+            actor.SetPickable(False)
+            self._renderer.AddActor(actor)
+            self._actor_metadata[id(actor)] = {
+                "is_boundary_glyph": True,
+                "boundary_name": str(record.get("name", "")),
+                "dofs": tuple(record.get("dofs", ())),
+            }
+            self._actors_by_id[id(actor)] = actor
+
+    def _add_couple_links(self, couple_records) -> None:
+        """Connect coupled nodes to their reference point with thin lines."""
+        if not self._available or self._renderer is None:
+            return
+        for record in list(couple_records or []):
+            target = np.asarray(record.get("reference_point"), dtype=float).reshape(-1)
+            points = np.asarray(record.get("points", []), dtype=float).reshape(-1, 3)
+            if target.size != 3 or not np.all(np.isfinite(target)):
+                continue
+            color = tuple(record.get("color", (.95, .75, .15)))
+            for point in points:
+                if not np.all(np.isfinite(point)):
+                    continue
+                actor = self._create_line_actor(point, target, color, 1.4)
+                actor.SetPickable(False)
+                self._renderer.AddActor(actor)
+                self._actor_metadata[id(actor)] = {
+                    "is_couple_link": True,
+                    "constraint_name": str(record.get("name", "")),
+                }
+                self._actors_by_id[id(actor)] = actor
+
     @staticmethod
     def _create_line_actor(start, end, color, line_width: float = 2.0):
         from vtkmodules.vtkFiltersSources import vtkLineSource
@@ -736,7 +807,9 @@ class VTKMeshViewer(QFrame):
                     or actor_metadata.get("is_cad_edge")
                     or actor_metadata.get("is_brep_face")
                     or actor_metadata.get("is_reference_point")
-                    or actor_metadata.get("is_load_glyph")):
+                    or actor_metadata.get("is_load_glyph")
+                    or actor_metadata.get("is_boundary_glyph")
+                    or actor_metadata.get("is_couple_link")):
                 continue
             prop = actor.GetProperty()
             if self._wireframe:
@@ -756,7 +829,9 @@ class VTKMeshViewer(QFrame):
             elif (not actor_metadata.get("is_cad_vertex")
                   and not actor_metadata.get("is_brep_face")
                   and not actor_metadata.get("is_reference_point")
-                  and not actor_metadata.get("is_load_glyph")):
+                  and not actor_metadata.get("is_load_glyph")
+                  and not actor_metadata.get("is_boundary_glyph")
+                  and not actor_metadata.get("is_couple_link")):
                 actor.GetProperty().SetEdgeVisibility(self._edge_visibility)
         self._interactor.GetRenderWindow().Render()
 
@@ -807,15 +882,7 @@ class VTKMeshViewer(QFrame):
             self.entityPicked.emit({**actor_metadata, "pick_type": "body"})
 
     def _select_actor(self, actor) -> None:
-        if self._highlight is not None and self._highlight is not actor:
-            old_metadata = self._actor_metadata.get(id(self._highlight), {})
-            old_property = self._highlight.GetProperty()
-            old_property.SetEdgeColor(.1, .1, .1)
-            old_property.SetLineWidth(1.0)
-            if old_metadata.get("is_cad_vertex"):
-                old_property.SetColor(.96, .96, .96)
-            elif old_metadata.get("is_brep_face"):
-                old_property.SetColor(*old_metadata.get("base_color", (.26, .65, .94)))
+        self._clear_highlight()
         self._highlight = actor
         prop = actor.GetProperty()
         prop.SetEdgeColor(1.0, .88, .15)
@@ -830,6 +897,21 @@ class VTKMeshViewer(QFrame):
             prop.SetEdgeColor(1.0, .35, .20)
         self._interactor.GetRenderWindow().Render()
 
+    def _clear_highlight(self) -> None:
+        """Restore every selectable actor before applying a new highlight."""
+        for actor, metadata in self._iter_actors():
+            prop = actor.GetProperty()
+            if metadata.get("is_brep_face"):
+                prop.SetColor(*metadata.get("base_color", (.40, .50, .66)))
+                prop.SetOpacity(1.0)
+                prop.SetEdgeColor(.1, .1, .1)
+                prop.SetLineWidth(1.0)
+            elif metadata.get("is_cad_vertex"):
+                prop.SetColor(*metadata.get("base_color", (.96, .96, .96)))
+                prop.SetEdgeColor(.1, .1, .1)
+                prop.SetLineWidth(1.0)
+        self._highlight = None
+
     def highlight_entity(self, entity: dict | None) -> bool:
         """Highlight a BREP face after the scene has been rebuilt.
 
@@ -837,7 +919,11 @@ class VTKMeshViewer(QFrame):
         rebuilds the scene.  This metadata-based lookup restores the red face
         without coupling the workbench to VTK actor identities.
         """
-        if not self._available or not entity:
+        if not self._available:
+            return False
+        self._clear_highlight()
+        if not entity:
+            self._interactor.GetRenderWindow().Render()
             return False
         part_name = entity.get("part_name")
         instance_name = entity.get("instance_name")
@@ -883,11 +969,13 @@ class VTKMeshViewer(QFrame):
             else:
                 self._select_actor(matches[0])
             return True
+        self._interactor.GetRenderWindow().Render()
         return False
 
     def show_controller(self, controller, result=None, instance_name: str | None = None,
                         brep: bool = False, reference_points=None,
-                        load_records=None, result_fields=None, field_name: str | None = None,
+                        load_records=None, boundary_records=None, couple_records=None,
+                        result_fields=None, field_name: str | None = None,
                         deformed: bool = True, deformation_scale: float = 1.0) -> None:
         if not self._available:
             return
@@ -1013,6 +1101,8 @@ class VTKMeshViewer(QFrame):
         self._set_scene_bounds(np.concatenate(scene_points, axis=0) if scene_points else [])
         self._add_reference_points(normalized_reference_points)
         self._add_load_glyphs(load_records)
+        self._add_boundary_glyphs(boundary_records)
+        self._add_couple_links(couple_records)
         if result is not None and field_name and surface_actor_count:
             first_actor = next(
                 (actor for actor, metadata in self._iter_actors()
@@ -1029,7 +1119,7 @@ class VTKMeshViewer(QFrame):
 
     def show_part(self, part, part_name: str = "Part-1", instance_name: str = "Part-1-1",
                   translation=None, rotation=None, reference_points=None,
-                  load_records=None) -> None:
+                  load_records=None, boundary_records=None, couple_records=None) -> None:
         """Render one already-meshed Part through the normal FE actor path.
 
         A lightweight Assembly wrapper keeps the rendering semantics identical
@@ -1048,9 +1138,12 @@ class VTKMeshViewer(QFrame):
         self.show_controller(SimpleNamespace(assembly=assembly), result=None,
                              instance_name=instance_name, brep=False,
                              reference_points=reference_points,
-                             load_records=load_records)
+                             load_records=load_records,
+                             boundary_records=boundary_records,
+                             couple_records=couple_records)
 
-    def show_brep(self, records: list[dict], reference_points=None, load_records=None) -> None:
+    def show_brep(self, records: list[dict], reference_points=None, load_records=None,
+                  boundary_records=None, couple_records=None) -> None:
         """Render unmeshed OCC faces, one actor per selectable BREP face.
 
         ``records`` are generated by :func:`torchfea.cad.preview_brep`; their
@@ -1082,6 +1175,7 @@ class VTKMeshViewer(QFrame):
                 points, triangles, np.zeros(len(points)),
                 undeformed=True,
                 color_index=face_index,
+                smooth=True,
             )
             # BREP faces are opaque in the CAD view; selection is communicated
             # by a solid red highlight.  Keep every unselected face the
@@ -1089,6 +1183,13 @@ class VTKMeshViewer(QFrame):
             # palette, is what distinguishes adjacent BREP faces.
             actor.GetProperty().SetColor(.40, .50, .66)
             actor.GetProperty().SetOpacity(1.0)
+            # The temporary triangles only tessellate the OCC face for
+            # display.  Smooth interpolation keeps the assembly/Part
+            # geometry view visibly BREP-like instead of resembling an FE
+            # surface mesh; the actual FE mesh path below remains faceted.
+            actor.GetProperty().SetInterpolationToPhong()
+            actor.GetProperty().SetSpecular(.12)
+            actor.GetProperty().SetSpecularPower(12)
             actor.GetProperty().SetEdgeVisibility(False)
             actor.SetPickable(self._selection_mode != "node")
             self._renderer.AddActor(actor)
@@ -1175,6 +1276,8 @@ class VTKMeshViewer(QFrame):
         self._set_scene_bounds(np.concatenate(scene_points, axis=0) if scene_points else [])
         self._add_reference_points(normalized_reference_points)
         self._add_load_glyphs(load_records)
+        self._add_boundary_glyphs(boundary_records)
+        self._add_couple_links(couple_records)
         self._update_axes()
         self._renderer.ResetCamera()
         self._update_axes()
@@ -1188,7 +1291,7 @@ class VTKMeshViewer(QFrame):
     def _create_surface_actor(points, triangles, displacement_magnitude,
                                undeformed: bool, color_index: int,
                                scalar_values=None, scalar_name: str = "Result",
-                               scalar_range=None):
+                               scalar_range=None, smooth: bool = False):
         """Create a VTK actor from one PyVista surface."""
         import pyvista
 
@@ -1197,6 +1300,13 @@ class VTKMeshViewer(QFrame):
         faces = np.column_stack(
             (np.full(len(triangles), 3, dtype=np.int64), triangles)).ravel()
         mesh = pyvista.PolyData(points, faces)
+        if smooth:
+            # BREP tessellation is only a display representation.  Generate
+            # shared point normals so curved OCC faces remain smooth while
+            # their separate boundary actors continue to show topology.
+            mesh.compute_normals(
+                cell_normals=False, point_normals=True,
+                split_vertices=False, inplace=True)
         mesh.point_data["Displacement magnitude"] = displacement_magnitude
         mapper = vtkPolyDataMapper()
         mapper.SetInputData(mesh)
@@ -1269,6 +1379,7 @@ class PostprocessPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project: CAEProject | None = None
+        self._submitted_controller = None
         self.controller = None
         self.result = None
         self._result_fields: dict[str, dict[str, np.ndarray]] = {}
@@ -1291,8 +1402,8 @@ class PostprocessPanel(QWidget):
         self.back_button.clicked.connect(self.backRequested)
         self.solve_button = QPushButton("1 · " + T("开始计算", "Start solve"))
         self.solve_button.setToolTip(T(
-            "使用当前已提交模型生成有限元对象并计算",
-            "Build the finite-element model from the submitted definition and solve it"))
+            "使用已生成的 FE 网格开始计算",
+            "Solve the generated FE mesh"))
         self.solve_button.setStyleSheet(
             "background:#00796b; font-weight:600; padding:7px 18px")
         self.solve_button.clicked.connect(self.start_solve)
@@ -1564,8 +1675,9 @@ class PostprocessPanel(QWidget):
         self._instance_summary = "\n".join(rows)
         self.instance_summary_label.setText(self._instance_summary)
 
-    def set_project(self, project: CAEProject) -> None:
+    def set_project(self, project: CAEProject, controller=None) -> None:
         self.project = project
+        self._submitted_controller = controller
         self.controller = self.result = None
         self._result_fields = {}
         self._solve_summary = ""
@@ -1579,25 +1691,30 @@ class PostprocessPanel(QWidget):
             self.instance_selector.addItem(instance.name, instance.name)
         self.instance_selector.blockSignals(False)
         self._populate_result_fields()
-        self.solve_button.setEnabled(True)
+        self.solve_button.setEnabled(controller is not None)
         self.import_result_button.setEnabled(True)
         self.export_result_button.setEnabled(False)
         self.back_button.setEnabled(True)
         self.solve_button.setText("1 · " + T("开始计算", "Start solve"))
-        self.status_label.setText(T(
-            "模型已提交：点击 1 开始计算",
-            "Model submitted: click 1 to start solve"))
+        if controller is None:
+            self.status_label.setText(T(
+                "请先生成 FE 网格",
+                "Generate the FE mesh before solving"))
+        else:
+            self.status_label.setText(T(
+                "模型已提交：点击 1 开始计算",
+                "Model submitted: click 1 to start solve"))
         self.statistics_label.setText("")
         self.instance_summary_label.setText("")
 
     def start_solve(self) -> None:
-        if self.project is None or self._thread is not None:
+        if self.project is None or self._submitted_controller is None or self._thread is not None:
             return
         self.solve_button.setEnabled(False)
         self.back_button.setEnabled(False)
         self.status_label.setText(T("计算中…", "Solving…"))
         self._thread = QThread(self)
-        self._worker = _SolveWorker(self.project)
+        self._worker = _SolveWorker(self._submitted_controller)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._solved)
