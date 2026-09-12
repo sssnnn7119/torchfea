@@ -1,232 +1,248 @@
-# FEA 使用说明（基于 tests 实例）
+# FEA 使用说明
 
-本文档汇总了仓库中 tests 下常用范式，帮助你快速完成从 INP 构建模型、添加载荷与约束、选择求解器并运行，再到导出与可视化的完整流程。
+本文档给出一条从模型输入到结果后处理的完整路径。推荐先理解“模型定义 → 工况 → 初始化 → 求解 → 结果”的顺序，再根据需要阅读 [材料模型与本构公式](materials.md)、[载荷](loads.md)、[求解器](solver.md)、[有限元单元](elements/elements_types_CHN.md) 和 [等参变换与数值积分](elements/isoparametric_and_quadrature_CHN.md)。
 
-> 参考来源：`tests/element_test/`、`tests/kinetic_test/`、`tests/contact_test/`、`tests/pressure_test/`、`tests/gradient_test/`、`tests/shape_optimization/`
+仓库中的可运行参考主要位于 `tests/`：压力算例在 `tests/pressure_test/`，材料比较在 `tests/material_test/`，动力学在 `tests/kinetic_test/`，接触在 `tests/contact_test/`，灵敏度在 `tests/gradient_test/`。
 
-## 环境建议
+## 1. 环境与数值约定
 
-- 推荐使用 Python 3.10+，PyTorch 配置为默认 float64：
-  ```python
-  import torch
-  torch.set_default_dtype(torch.float64)
-  # 可选：使用 GPU
-  # torch.set_default_device(torch.device('cuda'))
-  ```
-- Windows 下如需并行库不冲突，可设置：
-  ```python
-  import os
-  os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-  ```
-
-## 一、从 INP 构建模型
-
-最常见流程（见 `tests/kinetic_test/test_implicit.py` 等）：
+`torchfea` 在包入口将默认 PyTorch dtype 设为 `float64`。有限元非线性求解建议保持双精度；GPU 只改变计算设备，不改变材料参数的单位。
 
 ```python
-import os
+import torch
 import torchfea
 
-current_path = os.path.dirname(os.path.abspath(__file__))
+torch.set_default_dtype(torch.float64)
+# 可选：在脚本最开始指定设备
+# torch.set_default_device(torch.device("cuda"))
+```
 
-# 1) 读取 INP
+所有几何、材料、载荷和密度必须使用同一单位制。例如若长度用 mm、力用 N，则压力是 N/mm²，密度应是质量/mm³，时间单位也必须与此一致。
+
+## 2. 构建模型
+
+### 2.1 从 INP 读取
+
+```python
+from pathlib import Path
+import torchfea
+
 fem = torchfea.FEA_INP()
-fem.read_inp(os.path.join(current_path, 'C3D4Less.inp'))
-
-# 2) 根据 INP 构建控制器（包含 assembly 与 solver 占位）
-controller = torchfea.from_inp(fem)
+fem.read_inp(Path("C3D4.inp"))
+fe = torchfea.from_inp(fem)
 ```
 
-## 二、添加载荷与约束
+`from_inp` 会创建 `Assembly`、`Part`、`Instance`、单元、集合以及 INP 中能够识别的材料。当前材料关键字主要映射为 `*Hyperelastic -> NeoHookean` 和 `*Elastic -> LinearElastic`；其他超弹性模型请在 Python 中构造后分配，具体见 [材料文档](materials.md)。
 
-在 `controller.assembly` 上进行模型修改（tests 多数使用 `instance_name='final_model'`）：
+### 2.2 直接使用 CAD
 
-- 表面压力（`tests/pressure_test/test_benchmark.py`、`tests/kinetic_test/`）：
+若需要从基本体、布尔特征或 STEP 历史生成网格，可使用 `FEAController.cad`。CAE UI 使用的也是同一套内核对象；示例和集合映射规则见 [CAE UI 文档](cae_ui.md)。
 
-  ```python
-  controller.assembly.add_load(
-      torchfea.loads.Pressure(instance_name='final_model', surface_set='surface_1_All', pressure=0.06),
-      name='pressure-1'
-  )
-  ```
-- 固定边界（按节点集合，使用新的 boundary 接口；`set_nodes_name` 来自 INP 集合）：
+## 3. 设置材料
 
-  ```python
-  controller.assembly.add_boundary(
-      torchfea.boundarys.Boundary_Condition(instance_name='final_model', set_nodes_name='surface_0_Bottom', indexDoF=[0,1,2])
-  )
-  ```
-
-  - 若需对参考点施加边界（例如固定全部 6 个自由度），可用：
-
-  ```python
-  rp = controller.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
-  controller.assembly.add_boundary(
-    torchfea.boundarys.Boundary_Condition_RP(rp_name=rp, indexDoF=[0, 1, 2, 3, 4, 5])
-  )
-  ```
-- 参考点与耦合（`Couple`），见静力与接触示例：
-
-  ```python
-  rp_name = controller.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
-  controller.assembly.add_constraint(
-      torchfea.constraints.Couple(instance_name='final_model', set_nodes_name='surface_0_Head', rp_name=rp_name)
-  )
-  ```
-- 接触（体-体或自接触），见 `tests/contact_test/contact/test_benchmark.py` 与 `tests/gradient_test/test_grad.py`：
-
-  ```python
-  # 自接触
-  controller.assembly.add_load(
-      torchfea.loads.ContactSelf(instance_name='final_model', surface_name='surface_0_All')
-  )
-
-  # 体-体接触（两个实例）
-  controller.assembly.add_load(
-      torchfea.loads.Contact(instance_name1='final_model', instance_name2='Part-2',
-                             surface_name1='surface_0_All', surface_name2='surfaceblock')
-  )
-  ```
-- 体力（密度形式），见 `tests/shape_optimization/test_optimization.py`：
-
-  ```python
-  controller.assembly.add_load(
-      torchfea.loads.BodyForce(instance_name='final_model', element_name='element-0',
-                                force_density=[-9.81e-6, 0, 0])
-  )
-  ```
-- 弹簧载荷（新）：
-
-  - 参考点-参考点（RP-RP）弹簧：
-
-    ```python
-    rp1 = controller.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
-    rp2 = controller.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 60]))
-    controller.assembly.add_load(
-        torchfea.loads.Spring_RP_RP(rp_name1=rp1, rp_name2=rp2, k=1e3, rest_length=None)  # rest_length 默认初始距离
-    )
-    ```
-  - 参考点-空间点（RP-Point）弹簧：
-
-    ```python
-    rp = controller.assembly.add_reference_point(torchfea.ReferencePoint([0, 0, 80]))
-    controller.assembly.add_load(
-        torchfea.loads.Spring_RP_Point(rp_name=rp, point=[0, 0, 100], k=1e3, rest_length=None)
-    )
-    ```
-
-## 三、选择求解器并运行
-
-框架支持静力隐式、动力隐式（Newmark-β）与动力显式（中心差分）。设置求解器后调用 `controller.solve()` 即可。
-
-### 1) 静力隐式（牛顿-拉夫森）
-
-参考：`tests/pressure_test/test_benchmark.py`
+INP 模型中的单元块可以直接替换材料：
 
 ```python
-controller.solver = torchfea.solver.StaticImplicitSolver()
-# 可传入 tol_error 调整收敛容限
-result = controller.solve(tol_error=1e-3)
+part = fe.assembly.get_part("final_model")
+element = part.elems["C3D4"]
 
-# 求解结果对象：
-# result 是 torchfea.solver.StaticResult
-# result.converged: 是否收敛
-# result.GC ：最终位移向量
-U_final = result.GC  # torch.Tensor
-
-if not result.converged:
-    print('静力求解未收敛，已返回最后一次迭代结果。')
-
-# result.save('output.npz') 可持久化结果，StaticResult.load('output.npz') 可恢复
+element.set_materials({
+    "Gent": torchfea.materials.Gent(mu=0.6, Jm=20.0, kappa=4.5),
+})
 ```
 
-### 2) 动力隐式（Newmark-β）
-
-参考：`tests/kinetic_test/test_implicit.py`
+也可以按单元块内的局部编号分配多个材料。区域不能重叠；参与计算的单元都应有材料：
 
 ```python
-controller.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=0.1)
-# 可选：调整 Newmark 参数
-# controller.solver._gamma = 0.6
-# controller.solver._beta  = 0.3025
-
-result = controller.solve(tol_error=1e-6)
-
-# 求解结果对象：
-# result 是 torchfea.solver.DynamicResult
-GC_hist = result.GC_list  # [Tensor]
-GV_hist = result.GV_list  # [Tensor]
-GA_hist = result.GA_list  # [Tensor]
-T_hist  = result.time_list  # [float]
+element.set_materials(
+    torchfea.materials.MooneyRivlin(c10=0.3, c01=0.3, kappa=4.5),
+    name="region-a",
+    element_indices=[0, 1, 2],
+)
 ```
 
-### 3) 动力显式（中心差分）
+当前内核提供 `LinearElastic`、`NeoHookean`、`NeoHookeanLnJ`、`MooneyRivlin`、`Yeoh`、`Gent`、`ArrudaBoyce` 和 `Ogden`。材料能量、应力、切线和小应变等价参数的公式集中写在 [materials.md](materials.md)；不要把“初始模量相同”理解为有限变形下响应完全相同。
 
-参考：`tests/kinetic_test/test_explicit.py`
+## 4. 定义载荷、边界和约束
+
+模型修改都通过 `fe.assembly` 完成。添加对象的统一形式是 `add_xxx(object, name="...")`，对象在前、名称在后。
+
+### 4.1 压力与边界条件
 
 ```python
-controller.solver = torchfea.solver.DynamicExplicitSolver(time_end=0.1, time_per_storage=1e-4)
-result = controller.solve()
+fe.assembly.add_load(
+    torchfea.loads.Pressure(
+        instance_name="final_model",
+        surface_set="surface_1_All",
+        pressure=0.06,
+    ),
+    name="pressure-1",
+)
 
-# 求解结果对象：
-# result 是 torchfea.solver.DynamicResult
+fe.assembly.add_boundary(
+    torchfea.boundarys.Boundary_Condition(
+        instance_name="final_model",
+        set_nodes_name="surface_0_Bottom",
+        indexDoF=[0, 1, 2],       # U1, U2, U3
+    ),
+    name="fixed-bottom",
+)
+```
+
+边界条件中的 `indexDoF` 使用零基索引 `[0, 1, 2]`，分别对应平移自由度 U1、U2、U3。参考点的 6 个自由度依次为 U1、U2、U3、R1、R2、R3：
+
+```python
+rp = fe.assembly.add_reference_point(
+    torchfea.ReferencePoint([0.0, 0.0, 80.0]),
+    name="RP-1",
+)
+fe.assembly.add_boundary(
+    torchfea.boundarys.Boundary_Condition_RP(
+        rp_name=rp,
+        indexDoF=[0, 1, 2, 3, 4, 5],
+    ),
+    name="fixed-rp",
+)
+```
+
+### 4.2 参考点耦合、接触和其他载荷
+
+```python
+fe.assembly.add_constraint(
+    torchfea.constraints.Couple(
+        instance_name="final_model",
+        set_nodes_name="surface_0_Head",
+        rp_name=rp,
+    ),
+    name="head-couple",
+)
+
+fe.assembly.add_load(
+    torchfea.loads.BodyForce(
+        instance_name="final_model",
+        element_name="element-0",
+        force_density=[0.0, 0.0, -9.81e-6],
+    ),
+    name="gravity",
+)
+
+fe.assembly.add_load(
+    torchfea.loads.Spring_RP_Point(
+        rp_name=rp,
+        point=[0.0, 0.0, 100.0],
+        k=1e3,
+        rest_length=None,        # 默认取初始距离
+    ),
+    name="spring-ground",
+)
+```
+
+自接触使用 `ContactSelf(instance_name=..., surface_name=...)`，两实例接触使用 `Contact(instance_name1=..., instance_name2=..., surface_name1=..., surface_name2=...)`。参数和势能符号约定见 [loads.md](loads.md)。
+
+## 5. 初始化与求解
+
+### 5.1 静力隐式
+
+将收敛容差传给求解器构造函数，而不是传给 `controller.solve`：
+
+```python
+fe.solver = torchfea.solver.StaticImplicitSolver(
+    maximum_iteration=10000,
+    tol_error=1e-8,
+)
+result = fe.solve()
+
+print(result.converged)
+U = result.GC                 # 约化后的全局自由度向量
+```
+
+首次 `fe.solve()` 会自动调用 `fe.initialize()`。如果希望分开初始化，也可以显式调用 `fe.initialize()` 后再调用 `fe.solve()`；正常使用时不需要重复初始化。
+
+### 5.2 用第一次结果作为后续材料的初始解
+
+比较材料模型时，建议保持网格、载荷和边界不变，只更换材料；第一个工况收敛后，把它的 `GC` 作为后续求解的初始猜测：
+
+```python
+first = fe.solve()
+first_solution = first.GC.detach().clone()
+
+element.set_materials({
+    "Ogden": torchfea.materials.Ogden(
+        mu=[0.3, 0.3], alpha=[2.0, 5.0], kappa=4.5,
+    ),
+})
+second = fe.solve(GC0=first_solution, if_initialize=False)
+```
+
+`if_initialize=False` 适用于拓扑、集合、载荷和边界结构未改变，仅更新参数或材料的情况。若改变了网格、实例、集合、约束或载荷对象，应使用默认的 `if_initialize=True` 重新初始化。
+
+### 5.3 动力学
+
+动力隐式采用 Newmark-$\beta$：
+
+```python
+fe.solver = torchfea.solver.DynamicImplicitSolver(
+    deltaT=1e-3,
+    time_end=0.1,
+    tol_error=1e-6,
+)
+result = fe.solve()
 GC_hist = result.GC_list
 GV_hist = result.GV_list
 GA_hist = result.GA_list
-T_hist  = result.time_list
+T_hist = result.time_list
 ```
 
-> 提示：显式法的时间步长稳定性取决于最小单元尺寸与材料波速，必要时缩小 `time_per_storage` 与内部临界步长设置（见 `FEA/solver/dynamic_explicit.py`）。
-
-## 四、导出与可视化
-
-### 1) Controller 模型持久化（save/load）
-
-当你希望保存“完整模型状态”（assembly、loads、constraints、solver 配置等）并在之后恢复，而不是只保存一次求解结果时，使用 controller 级别持久化。
-
-当前接口：
-
-- 保存：`controller.save_model(path)`
-- 加载：`torchfea.load_model(path)`
-
-示例：
+动力显式使用中心差分，并由内核估计临界时间步：
 
 ```python
-import torchfea
-
-# 假设 controller 已构建并完成载荷/约束/求解器设置
-controller.save_model('model_state.npz')
-
-# 在同进程或后续脚本中恢复
-controller2 = torchfea.load_model('model_state.npz')
-
-# 恢复后可直接继续求解
-result = controller2.solve(tol_error=1e-6)
+fe.solver = torchfea.solver.DynamicExplicitSolver(
+    time_end=0.1,
+    time_per_storage=1e-4,
+)
+result = fe.solve()
 ```
 
-说明：
+显式计算对最小单元尺寸、材料波速和密度敏感；工程使用时应检查估计步长和能量稳定性。求解器的离散公式和收敛过程见 [solver.md](solver.md)。
 
-- `controller.save_model/load_model` 保存的是“模型对象状态”。
-- `result.save/load` 保存的是“求解结果”（如 `StaticResult` / `DynamicResult`）。
-- 两者可组合使用：先恢复模型，再基于新工况求解并保存结果。
-- 可视化（PyVista，见多处 tests）：
-- ```python
-  import pyvista as pv
-  import numpy as np
+## 6. 结果、持久化与可视化
 
-  ins = controller.assembly.get_instance('final_model')
-  U = controller.assembly.RGC[ins._RGC_index].cpu().numpy()
-  undeformed = ins.nodes.cpu().numpy()
-  deformed = undeformed + U
+静力结果包含 `GC`、收敛状态、工况和计时信息；若通过 `fe.solve(need_jacobian=True)` 请求雅可比，还会在结果中保存按载荷名称分组的 `jacobian`。
 
-  # 三角面来自某表面集合
-  tris = ins.surfaces.get_elements('surface_0_All')[0]._elems[:, :3].cpu().numpy()
+```python
+result.save("static_result.npz")
+loaded_result = torchfea.solver.StaticResult.load("static_result.npz")
+```
 
-  scalars = (U**2).sum(axis=1)**0.5
-  faces = np.column_stack([np.full(len(tris), 3), tris])
-  mesh = pv.PolyData(deformed, faces)
-  mesh['displacement'] = scalars
-  plotter = pv.Plotter()
-  plotter.add_mesh(mesh, scalars='displacement')
-  plotter.show()
-  ```
+`result.save/load` 保存求解结果；若要保存完整的 CAD、装配、材料、载荷、边界和求解器配置，应使用 controller 级别接口：
+
+```python
+fe.save_model("model_state.npz")
+fe2 = torchfea.load_model("model_state.npz")
+result2 = fe2.solve()
+```
+
+模型和结果带有模型哈希校验。加载结果用于后处理前，应确认结果对应当前模型；直接修改节点、材料或载荷后，应重新求解。
+
+实例表面可以用 PyVista 显示：
+
+```python
+import pyvista as pv
+
+instance = fe.assembly.get_instance("final_model")
+rgc = fe.GC2RGC(result.GC)
+mesh = instance.get_mesh(RGC=rgc, surf_name="surface_0_All")
+plotter = pv.Plotter()
+plotter.add_mesh(mesh, show_edges=True)
+plotter.show()
+```
+
+## 7. 诊断顺序
+
+遇到不收敛、变形异常或材料之间结果差异很大时，可按以下顺序检查：
+
+1. 单位制是否一致，尤其是 `E`/`mu`、`kappa`、压力和密度。
+2. 约束是否去除了刚体运动，表面集合和实例名称是否存在。
+3. `J` 是否保持为正，Gent 是否满足 `I1bar - 3 < Jm`。
+4. 不同材料是否真的只在高阶项上不同；小应变对应关系见 [materials.md](materials.md)。
+5. 非线性载荷是否需要更小的加载步、更好的 `GC0` 或更严格/合适的 `tol_error`。

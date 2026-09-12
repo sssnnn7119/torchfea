@@ -17,7 +17,8 @@ Gmsh/OCC-based CAE interface.
   Pardiso/Conjugate-Gradient linear algebra
 - Dynamic implicit (Newmark-β) and dynamic explicit (central-difference)
   solvers
-- Hyperelastic and Saint Venant–Kirchhoff/linear-elastic material models
+- Neo-Hookean, Mooney–Rivlin, Yeoh, Gent, Arruda–Boyce, Ogden, and
+  Saint Venant–Kirchhoff/linear-elastic material models
 - Pressure, body force, concentrated force, moment, springs, penalty degrees
   of freedom, self-contact, and body-to-body contact
 - Reference points, node coupling, displacement boundaries, named node/element
@@ -160,7 +161,9 @@ retains the existing nodes, elements, sets, materials, loads, and constraints
 without inventing a CAD history or remeshing it. A CAD-created model retains
 its OCC history and can be rebuilt in the UI.
 
-See [`docs/cae_ui.md`](docs/cae_ui.md) for the complete CAE workflow.
+See [`docs/cae_ui.md`](docs/cae_ui.md) for the complete CAE workflow and
+[`docs/materials.md`](docs/materials.md) for constitutive equations and
+small-strain parameter matching.
 
 ## Persistence and result validation
 
@@ -201,6 +204,9 @@ Useful references:
 - [`docs/structure.md`](docs/structure.md) — package architecture and data flow
 - [`docs/solver.md`](docs/solver.md) — nonlinear and dynamic solver details
 - [`docs/loads.md`](docs/loads.md) — load interface and examples
+- [`docs/materials.md`](docs/materials.md) — material models, theory, and parameters
+- [`docs/elements/elements_types_CHN.md`](docs/elements/elements_types_CHN.md) — element formulas and integration rules
+- [`docs/elements/isoparametric_and_quadrature_CHN.md`](docs/elements/isoparametric_and_quadrature_CHN.md) — mapping and quadrature details
 
 ## License and scope
 

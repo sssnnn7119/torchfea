@@ -158,10 +158,10 @@ $$
 
 ### 4.4 Jacobian 逆矩阵
 
-逆矩阵 $\mathbf{J}^{-1}$ 将参考空间的梯度变换为物理空间的梯度：
+逆矩阵 $\mathbf{J}^{-1}$ 将参考空间的梯度变换为物理空间的梯度。由于 $J_{ij}=\partial x_i/\partial\xi_j$，有：
 
 $$
-\frac{\partial}{\partial x_i} = (J^{-1})_{ij} \, \frac{\partial}{\partial \xi_j}
+\frac{\partial}{\partial x_i} = (J^{-1})_{ji} \, \frac{\partial}{\partial \xi_j}
 $$
 
 ---
@@ -178,22 +178,22 @@ $$
 
 ### 5.2 矩阵形式
 
-记形函数参考梯度矩阵 $[\nabla_{\boldsymbol{\xi}} N]$ （$n \times 3$），则物理梯度为：
+记形函数参考梯度矩阵 $[\nabla_{\boldsymbol{\xi}} N]$ （每行是一个节点的梯度，形状 $n \times 3$），则物理梯度为：
 
 $$
-[\nabla_{\mathbf{x}} N] = [\nabla_{\boldsymbol{\xi}} N] \cdot \mathbf{J}^{-T}
+[\nabla_{\mathbf{x}} N] = [\nabla_{\boldsymbol{\xi}} N] \cdot \mathbf{J}^{-1}
 $$
 
-或按分量：
+按代码采用的“第一坐标轴为物理分量”存储方式，矩阵形式为：
 
 $$
-\frac{\partial N_a}{\partial x_i} = (J^{-1})_{ij} \, \frac{\partial N_a}{\partial \xi_j}
+\frac{\partial N_a}{\partial x_i} = (J^{-1})_{ji} \, \frac{\partial N_a}{\partial \xi_j}
 $$
 
 ### 5.3 代码实现
 
 ```
-shapeFun1[g, e, i, a] = (J⁻¹)_{ij}|_{ξ_g} · ∂N_a/∂ξ_j|_{ξ_g}
+shapeFun1[g, e, i, a] = (J⁻¹)_{ji}|_{ξ_g} · ∂N_a/∂ξ_j|_{ξ_g}
 ```
 
 即 `einsum('gemi,gb,mab->geia', inv_Jacobian, pp, shape1_now)`。
@@ -307,7 +307,7 @@ $$
 
 **代码（张量形式，直接简化版本）**：
 
-```
+```text
 inv_Jacobian2[g, e, m, l, k] = -J⁻¹_{mj} · J⁻¹_{pk} · J⁻¹_{nl} · H_{jnp}
 ```
 
@@ -325,11 +325,11 @@ inv_Jacobian2 = -torch.einsum(
 
 物理空间中形函数的二阶导数 $\partial^2 N_a/\partial x_i \partial x_j$ 对计算几何刚度矩阵和灵敏度分析至关重要。
 
-从一阶导数 $\partial N_a/\partial x_i = (J^{-1})_{im} \, \partial N_a/\partial \xi_m$ 出发，再对 $x_j$ 求导，应用链式法则：
+从一阶导数 $\partial N_a/\partial x_i = (J^{-1})_{mi} \, \partial N_a/\partial \xi_m$ 出发，再对 $x_j$ 求导，应用链式法则：
 
 $$
 \frac{\partial^2 N_a}{\partial x_i \partial x_j}
-= \frac{\partial}{\partial x_j} \left[ (J^{-1})_{im} \cdot \frac{\partial N_a}{\partial \xi_m} \right]
+= \frac{\partial}{\partial x_j} \left[ (J^{-1})_{mi} \cdot \frac{\partial N_a}{\partial \xi_m} \right]
 $$
 
 展开为两项：
@@ -337,8 +337,8 @@ $$
 $$
 \boxed{
 \frac{\partial^2 N_a}{\partial x_i \partial x_j}
-= (J^{-1})_{im} \cdot (J^{-1})_{jn} \cdot \frac{\partial^2 N_a}{\partial \xi_m \partial \xi_n}
-+ \frac{\partial (J^{-1})_{im}}{\partial x_j} \cdot \frac{\partial N_a}{\partial \xi_m}
+= (J^{-1})_{mi} \cdot (J^{-1})_{nj} \cdot \frac{\partial^2 N_a}{\partial \xi_m \partial \xi_n}
++ \frac{\partial (J^{-1})_{mi}}{\partial x_j} \cdot \frac{\partial N_a}{\partial \xi_m}
 }
 $$
 
@@ -347,7 +347,7 @@ $$
 第一项是二阶 $\xi$-导数经两次 $J^{-1}$ 变换到物理空间：
 
 $$
-\text{Term1} = (J^{-1})_{im} \cdot (J^{-1})_{jn} \cdot \frac{\partial^2 N_a}{\partial \xi_m \partial \xi_n}
+\text{Term1} = (J^{-1})_{mi} \cdot (J^{-1})_{nj} \cdot \frac{\partial^2 N_a}{\partial \xi_m \partial \xi_n}
 $$
 
 **代码**：
@@ -364,7 +364,7 @@ term1 = torch.einsum('gemi, genj, gmna->geija',
 第二项来源于 $J^{-1}$ 随空间位置变化产生的修正：
 
 $$
-\text{Term2} = \frac{\partial (J^{-1})_{im}}{\partial x_j} \cdot \frac{\partial N_a}{\partial \xi_m}
+\text{Term2} = \frac{\partial (J^{-1})_{mi}}{\partial x_j} \cdot \frac{\partial N_a}{\partial \xi_m}
 $$
 
 **代码**：
@@ -374,7 +374,7 @@ term2 = torch.einsum('gemij, gma->geija',
                      inv_Jacobian2, shape1_gaussian)
 ```
 
-其中 `inv_Jacobian2[g, e, i, m, j] = ∂(J^{-1})_{im}/∂x_j`，
+其中 `inv_Jacobian2[g, e, m, i, j] = ∂(J^{-1})_{mi}/∂x_j`，
 `shape1_gaussian[g, m, a] = ∂N_a/∂ξ_m|_{ξ_g}`。
 
 #### 合并结果
@@ -406,13 +406,13 @@ self.shape_function_d2_gaussian = term1 + term2
 | `shape0_now`                 | `[a, m]`          | 形函数的多项式基系数$C_{am}$                                 |
 | `shape1_now`                 | `[i, a, m]`       | $\partial N_a/\partial \xi_i$ 的多项式系数                   |
 | `Jacobian`                   | `[g, e, i, j]`    | $J_{ij} = \partial x_i/\partial \xi_j$                       |
-| `inv_Jacobian`               | `[g, e, i, j]`    | $(J^{-1})_{ij}$                                              |
+| `inv_Jacobian`               | `[g, e, m, i]`    | $(J^{-1})_{mi}=\partial\xi_m/\partial x_i$                   |
 | `shapeFun1`                  | `[g, e, i, a]`    | $\partial N_a/\partial x_i$ 在高斯点处的值                   |
 | `shapeFun0`                  | `[g, e, a]`       | $N_a$ 在高斯点处的值                                         |
 | `gaussian_weight`            | `[g, e]`          | 物理空间积分权重$w_g$                                        |
 | `Jacobian2`                  | `[g, e, i, m, n]` | $\partial^2 x_i/\partial \xi_m\partial \xi_n$                |
 | `shape2_gaussian`            | `[g, i, j, a]`    | $\partial^2 N_a/\partial \xi_i\partial \xi_j$ 在高斯点处的值 |
-| `inv_Jacobian2`              | `[g, e, i, j, k]` | $\partial (J^{-1})_{ij}/\partial x_k$                        |
+| `inv_Jacobian2`              | `[g, e, m, i, k]` | $\partial (J^{-1})_{mi}/\partial x_k$                        |
 | `shape_function_d2_gaussian` | `[g, e, i, j, a]` | $\partial^2 N_a/\partial x_i\partial x_j$ 在高斯点处的值     |
 
 ---
@@ -426,7 +426,7 @@ graph TD
     C --> D["Step 3: 形函数 ξ-导数<br/>shape1_now[i,a,m] = ∂N_a/∂ξ_i"]
     D --> E["Step 4: Jacobian<br/>J_{ij} = Σ_a (∂N_a/∂ξ_j) x_i^a"]
     E --> F["Step 5: det(J) & J⁻¹"]
-    F --> G["Step 6: Push-Forward<br/>∂N_a/∂x_i = (J⁻¹)_{ij} ∂N_a/∂ξ_j"]
+    F --> G["Step 6: Push-Forward<br/>∂N_a/∂x_i = (J⁻¹)_{mi} ∂N_a/∂ξ_m"]
     G --> H["Step 7: 积分权重<br/>w_g = w_g^{ref} · det(J)"]
     H --> I["输出:<br/>shape_function_d0_gaussian<br/>shape_function_d1_gaussian<br/>gaussian_weight"]
 

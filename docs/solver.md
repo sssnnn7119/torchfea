@@ -1,10 +1,24 @@
-# Solver 求解器文档
+# 求解器与非线性迭代
 
-## 1. 核心思想：最小势能原理
+求解器只接收已经建立好的 `FEAController`。通常先把材料、载荷、边界和约束加入 `controller.assembly`，再设置 `controller.solver`，最后调用 `controller.solve()`。收敛容差等求解器参数在构造函数中设置。
 
-本框架的求解器基于**最小势能原理**（Principle of Minimum Potential Energy）构建。核心思路是：将所有内力和外力统一表达为系统总势能 $\Pi(\mathbf{u})$，然后寻找使总势能最小的位移场 $\mathbf{u}^*$：
+## 1. 核心思想：势能驻值原理
 
-$$\mathbf{u}^* = \arg\min_{\mathbf{u}} \ \Pi(\mathbf{u})$$
+本框架的求解器基于**势能驻值原理**（在稳定问题上对应最小势能）构建。核心思路是：将可保守的内力和外力统一表达为系统总势能 $\Pi(\mathbf{u})$，然后寻找满足平衡条件的位移场 $\mathbf{u}^*$：
+
+$$\nabla_{\mathbf{u}}\Pi(\mathbf{u}^*)=\mathbf{0}$$
+
+静力求解的常用入口是：
+
+```python
+fe.solver = torchfea.solver.StaticImplicitSolver(
+    maximum_iteration=10000,
+    tol_error=1e-5,
+)
+result = fe.solve(GC0=None, if_initialize=True)
+```
+
+`FEAController.solve` 默认自动初始化装配。只改变材料或载荷参数、且不改变拓扑和约束结构时，可以传入上一个 `result.GC` 并设置 `if_initialize=False`。
 
 ### 1.1 总势能的构成
 
@@ -12,23 +26,23 @@ $$\mathbf{u}^* = \arg\min_{\mathbf{u}} \ \Pi(\mathbf{u})$$
 
 $$\Pi(\mathbf{u}) = U(\mathbf{u}) - W(\mathbf{u})$$
 
-- **$U(\mathbf{u})$**：结构应变能（内力势能）。由各单元在高斯积分点上积分得到，包含材料非线性（超弹性、塑性等）。
+- **$U(\mathbf{u})$**：结构应变能（内力势能）。由各单元在高斯积分点上积分得到，包含当前内核中的线弹性、超弹性和几何非线性。
 
   ```python
   # assembly.py: _total_Potential_Energy
   energy = 0
-  for ins in self._instances.values():
+  for ins in self._instances_enabled:
       energy = energy + ins.potential_energy(RGC=RGC)  # 结构应变能
   ```
 
 - **$W(\mathbf{u})$**：外力功。包括节点力、压力、接触力等所有外载荷做的功。
 
   ```python
-  for f in self._loads.values():
+  for f in self._loads_enabled:
       energy = energy - f.get_potential_energy(RGC=RGC)  # 外力势能（注意减号）
   ```
 
-这种统一的好处是：**所有力（内力、外力、接触力、约束力）都在同一个能量泛函框架下处理**，求解过程只需关注能量的极小化，无需区分力的来源。
+这种统一的好处是：结构内力和可保守载荷（包括压力、弹簧和接触）可以用同一套势能/残差接口处理。位移边界通过约化自由度施加，耦合约束则在残差和切线矩阵上做映射；它们不是简单地追加到 `Assembly._total_Potential_Energy` 中。求解器最终求解处理后自由度上的平衡驻点。
 
 ### 1.2 平衡条件
 
@@ -117,7 +131,7 @@ $$\Pi(\mathbf{u}_k + \alpha \Delta \mathbf{u}_k) \leq \Pi(\mathbf{u}_k) + c_1 \c
 
 $$|\Delta \mathbf{u}|_\infty < \text{tol} \quad \text{且} \quad |\mathbf{R}|_\infty < \text{tol}$$
 
-或 $|\mathbf{R}|_\infty < 10^{-6}$（默认容差 `tol_error = 1e-5`）。
+实现中，当 $|\mathbf{R}|_\infty < 10^{-6}$ 时也会提前结束；否则需要同时满足步长和残差均小于构造求解器时设置的 `tol_error`（默认 `1e-5`）。
 
 ### 2.5 失效处理
 
@@ -152,7 +166,7 @@ $$\tilde{K}_{ij} = \frac{K_{ij}}{\sqrt{|K_{ii}|} \cdot \sqrt{|K_{jj}|}}, \quad \
 | 触发条件 | 说明 |
 |----------|------|
 | `__low_alpha_count > 5`（静力学）或 `> 3`（动力学） | 连续多步线搜索步长过小，说明牛顿方向质量差，需要精确求解 |
-| `\|R_preconditioned\|_\infty < 1e-3` | 残差已经很小，接近最优解，精确求解可加速最终收敛 |
+| `\|R_preconditioned\|_\infty < 1e-2` | 残差已经很小，接近最优解，精确求解可加速最终收敛 |
 | `device == 'cpu'` | 在 CPU 上运行时直接使用 PyPardiso（CG 在 CPU 上较慢） |
 | 动力学额外条件：`iter_now % 20 == 0` | 每 20 步做一次精确求解，定期"校准"方向 |
 
@@ -226,10 +240,10 @@ $$\Pi_{\text{inc}}(\mathbf{u}_{n+1}) = U(\mathbf{u}_{n+1}) - W(\mathbf{u}_{n+1})
 | CG 最大迭代（平时） | 1200 | 1500 |
 | CG 最大迭代（困难） | 3000 | 6000 |
 | 触发 PyPardiso 的 `low_alpha` 阈值 | >5 | >3 |
-| 定期 PyPardiso | 无 | 每 20 步 |
-| 残差触发阈值 | `< 1e-3` | `< 1e-3` |
+| 定期 CG 校准 | 无 | 每 20 步优先使用更高迭代上限的 CG |
+| 残差触发阈值 | `< 1e-2` | `< 1e-3` |
 
-动力学加入每 20 步定期执行 PyPardiso 的策略，是因为增量刚度矩阵中加入了质量矩阵的贡献 $\frac{1}{\beta\Delta t^2}\mathbf{M}$，当 $\Delta t$ 很小时该项很大，导致系统条件数变差，CG 收敛可能变慢。
+动力学加入每 20 步定期执行 CG 校准的策略；在 CPU 上仍直接使用 PyPardiso。增量刚度矩阵中加入了质量矩阵的贡献 $\frac{1}{\beta\Delta t^2}\mathbf{M}$，当 $\Delta t$ 很小时该项很大，系统条件数可能变差。
 
 ### 4.6 初始加速度
 
@@ -317,7 +331,7 @@ $$\Pi_{\text{inc}}(\mathbf{u}_{n+1}) = U(\mathbf{u}_{n+1}) - W(\mathbf{u}_{n+1})
 
 ## 7. 设计哲学
 
-1. **能量统一视角**：所有力学效应（弹性、塑性、接触、载荷）都通过势能贡献来表达，求解器只做一件事——极小化总势能。这使得添加新的物理效应只需实现其能量贡献，无需修改求解器核心。
+1. **能量统一视角**：当前可保守的弹性、超弹性、接触和载荷通过势能贡献进入总势能，求解器负责求解其驻点。这使得添加新的能量型物理效应时通常无需修改求解器核心。
 
 2. **全局化牛顿法**：纯牛顿法在远离最优解时可能发散，回溯线搜索保证了每步迭代的势能单调下降，大幅提高鲁棒性。
 

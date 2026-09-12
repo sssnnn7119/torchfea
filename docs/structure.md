@@ -11,19 +11,26 @@ torchfea/
 ├── .gitignore
 ├── .python-version
 ├── pyproject.toml              # 项目配置
-├── readme.md                   # 项目简介
+├── README.md                   # 项目简介
 ├── docs/                       # 文档
 │   ├── structure.md            # 架构说明（本文档）
 │   ├── usage.md                # 使用说明
-│   └── elements/               # 单元文档
-├── examples/                   # 示例与测试用例
-│   ├── contact_test/           # 接触分析示例
-│   ├── element_test/           # 单元与表面测试
-│   ├── gradient_test/          # 梯度与优化测试
-│   ├── jacobian_test/          # 雅可比/灵敏度测试
-│   ├── kinetic_test/           # 动力学测试
-│   ├── multiprocess_test/      # 多进程测试
-│   └── pressure_test/          # 压力加载测试
+│   ├── materials.md            # 材料模型与本构公式
+│   └── elements/               # 单元与积分文档
+├── tests/                      # 可运行测试与示例
+│   ├── cad_test/               # CAD/网格历史
+│   ├── enableobj_test/         # 对象启停
+│   ├── contact_test/           # 接触分析
+│   ├── element_test/           # 单元与表面
+│   ├── gradient_test/          # 梯度与优化
+│   ├── jacobian_test/          # 雅可比灵敏度
+│   ├── material_test/          # 材料模型与参数等价
+│   ├── kinetic_test/           # 动力学
+│   ├── multiprocess_test/       # 多进程计算
+│   ├── pressure_test/          # 压力加载
+│   ├── savemodel_test/         # 模型持久化
+│   ├── test_simp_material/     # SIMP 材料
+│   └── to2ndelement_test/      # 线性到二次单元
 └── src/
     └── torchfea/               # 核心包
         ├── __init__.py         # 包入口
@@ -61,8 +68,8 @@ torchfea/
 - **文件位置**: `src/torchfea/controller.py`
 - **功能**: 主控制器，协调装配(Assembly)和求解器(Solver)
 - **主要方法**:
-  - `initialize()`: 初始化模型
-  - `solve()`: 执行求解过程
+  - `initialize()`: 建立 RGC/GC、对象索引和求解器缓存
+  - `solve(GC0=None, if_initialize=True)`: 执行求解；`GC0` 可作为初始猜测，`if_initialize=False` 用于只改材料或参数的连续计算
 - **属性**:
   - `assembly`: 装配对象
   - `solver`: 求解器对象
@@ -82,9 +89,8 @@ torchfea/
   - `_reference_points`: 参考点
   - `_loads`: 载荷集合
   - `_constraints`: 约束集合
-  - `boundary_conditions`: 边界条件集合
-  - `RGC`: 冗余广义坐标
-  - `GC`: 广义坐标
+  - `_boundarys`: 边界条件集合（通过 `add_boundary` 注册）
+  - `_RGC`: 冗余广义坐标；`_GC`: 约化后的全局广义坐标（内部状态）
 
 #### 装配层子模块
 
@@ -100,6 +106,10 @@ torchfea/
 - **3D单元**: `src/torchfea/model/elements/dimension3/` (包含 brick.py, tetrahedral.py 等)
   - `surfaces/`: 表面单元定义
 - **材料模块**: `src/torchfea/model/elements/materials/`
+  - 基类：`Materials_Base`
+  - 现有模型：`LinearElastic`、`NeoHookean`、`NeoHookeanLnJ`、`MooneyRivlin`、`Yeoh`、`Gent`、`ArrudaBoyce`、`Ogden`
+  - 材料通过 `BaseElement.set_materials(mat, name=None, element_indices=None)` 分配到单元块或局部单元区域
+  - 理论公式和小应变参数换算见 [materials.md](materials.md)
 - **职责定位**: 与载荷模块在装配层地位对等，二者都向系统提供势能项，最终共同组成总势能表达式。
 
 ##### 载荷模块 (`src/torchfea/model/loads/`)
@@ -135,8 +145,8 @@ src/torchfea/solver/
 #### 求解器类型与要点
 
 - **StaticImplicitSolver** (`static/solver.py`)
-  - 牛顿-拉夫森迭代，支持线搜索与预条件线性求解（Pardiso/CG）。
-  - 核心接口：`get_stiffness_matrix(GC_now) -> (R, K_idx, K_val)`，`solve()`。
+  - Newton-Raphson 迭代，带回溯线搜索和预条件线性求解（CPU 上使用 PyPardiso，适合时使用 CG）。
+  - 核心接口：`get_stiffness_matrix(GC_now) -> (R, K_idx, K_val)`，`solve(GC0=None)`。
 - **DynamicImplicitSolver** (`dynamic/implicit.py`)
   - Newmark-β（默认 γ=0.5, β=0.25），以增量能量为目标进行非线性迭代。
   - 使用 `assemble_mass_matrix(GC_now)` 获取质量矩阵，`get_incremental_stiffness_matrix()` 组装切线矩阵。
@@ -272,18 +282,15 @@ controller = torchfea.from_inp(inp)
 # 设置求解器（示例 1：静力隐式）
 controller.solver = torchfea.solver.StaticImplicitSolver()
 
-# 初始化和求解
-controller.initialize()
+# 初始化和求解；solve() 默认自动初始化
 result = controller.solve()
 
 # 示例 2：动力隐式（Newmark-β）
 controller.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=1.0)
-controller.initialize()
 controller.solve()
 
 # 示例 3：动力显式（中心差分）
 controller.solver = torchfea.solver.DynamicExplicitSolver(time_end=1.0, time_per_storage=1e-4)
-controller.initialize()
 controller.solve()
 ```
 
@@ -303,7 +310,7 @@ controller.solve()
 
 - 支持自接触和多体接触
 - 接触力的自动计算
-- 测试样例见 `examples/contact_test/`、`examples/pressure_test/` 与 `examples/gradient_test/`。
+- 测试样例见 `tests/contact_test/`、`tests/pressure_test/` 与 `tests/gradient_test/`。
 
 ### 4. 表面处理
 
@@ -320,9 +327,10 @@ controller.solve()
 
 ### 添加新材料模型
 
-1. 继承 `Materials_Base`
-2. 实现应力-应变关系
-3. 在材料初始化函数中添加分支
+1. 继承 `Materials_Base`；若模型可写成 $W(\bar I_1,\bar I_2,J)$，可复用材料内核的 invariant 基类结构。
+2. 实现 `strain_energy_density_C3(F)` 和 `material_Constitutive_C3(F, ...)`，返回能量、`s=P.T` 以及与 `C3base.py` 索引约定一致的一致切线。
+3. 用参考构形、小应变和有限差分分别检查能量、应力和切线；导出类到 `materials/__init__.py`。
+4. 只有希望从 INP/CAE 关键字直接创建时，才需要额外扩展解析器或 UI 的材料分支。直接 Python 构造不需要修改 `initialize_materials`。
 
 ### 添加新载荷类型
 
@@ -349,11 +357,12 @@ controller.solve()
 
 ## 测试与示例
 
-- `examples/element_test/`：单元与表面几何、法向、编号一致性等测试
-- `examples/kinetic_test/`：显式/隐式动力学时间积分与能量检查
-- `examples/contact_test/`：接触算例与基准对比
-- `examples/pressure_test/`：表面压力加载验证
-- `examples/gradient_test/`：梯度与优化流程
+- `tests/element_test/`：单元与表面几何、法向、编号一致性等测试
+- `tests/kinetic_test/`：显式/隐式动力学时间积分与能量检查
+- `tests/contact_test/`：接触算例与基准对比
+- `tests/material_test/`：材料能量、应力、切线和小应变等价检查
+- `tests/pressure_test/`：表面压力加载验证
+- `tests/gradient_test/`：梯度与优化流程
 
 ---
 

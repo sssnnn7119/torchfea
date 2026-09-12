@@ -1,8 +1,10 @@
 # Loads 载荷文档
 
+载荷、边界和约束均属于 `Assembly` 工况的一部分。常用注册形式为 `assembly.add_load(load, name="load-name")`、`assembly.add_boundary(boundary, name="boundary-name")` 和 `assembly.add_constraint(constraint, name="constraint-name")`；名称用于后续工况切换和灵敏度分析。所有长度、力、时间和密度参数必须遵守同一单位制。
+
 ## 1. BaseLoad 基类接口
 
-所有载荷类都继承自 `BaseLoad`（间接继承自 `BaseObj`）。一个自定义载荷需要实现以下方法：
+所有载荷类都继承自 `BaseLoad`（间接继承自 `BaseObj`）。载荷对象先构造，再通过 `assembly.add_load(load, name=...)` 注册；不要使用旧的 `assembly.add_load(name, load)` 参数顺序。一个自定义载荷需要实现以下方法：
 
 ### 1.1 必须实现的方法
 
@@ -57,7 +59,7 @@ from torchfea.model.loads import Concentrate_Force
 
 # 在参考点 rp_name 上施加集中力 [Fx, Fy, Fz]
 force = Concentrate_Force(rp_name="RP-1", force=[100.0, 0.0, -500.0])
-assembly.add_load("my_force", force)
+assembly.add_load(force, name="my_force")
 ```
 
 ### 2.2 代码实现
@@ -72,8 +74,8 @@ class Concentrate_Force(BaseLoad):
         # 缓存力作用的 DOF 索引（参考点的前 3 个自由度：x, y, z 位移）
         rp_index = assembly.get_reference_point(self.rp_name)._RGC_index
         self._indices_force = torch.arange(
-            assembly.RGC_list_indexStart[rp_index],
-            assembly.RGC_list_indexStart[rp_index] + 3
+            assembly._RGC_list_indexStart[rp_index],
+            assembly._RGC_list_indexStart[rp_index] + 3
         )
 
     def get_stiffness(self, RGC, if_onlyforce=False):
@@ -111,7 +113,7 @@ from torchfea.model.loads import Moment
 
 # 在参考点 rp_name 上施加力矩 [Mx, My, Mz]
 moment = Moment(rp_name="RP-1", moment=[0.0, 0.0, 1000.0])
-assembly.add_load("my_moment", moment)
+assembly.add_load(moment, name="my_moment")
 ```
 
 ### 3.2 代码实现
@@ -126,8 +128,8 @@ class Moment(BaseLoad):
         # 缓存力矩作用的 DOF 索引（参考点的后 3 个自由度：Rx, Ry, Rz 旋转）
         rp_index = assembly.get_reference_point(self.rp_name)._RGC_index
         self._indices_force = torch.arange(
-            assembly.RGC_list_indexStart[rp_index] + 3,
-            assembly.RGC_list_indexStart[rp_index] + 6
+            assembly._RGC_list_indexStart[rp_index] + 3,
+            assembly._RGC_list_indexStart[rp_index] + 6
         )
 
     def get_stiffness(self, RGC, if_onlyforce=False):
@@ -157,7 +159,7 @@ from torchfea.model.loads import Pressure
 
 # 在 instance.surface 上施加压强 p
 pressure = Pressure(instance_name="Part-1", surface_set="Surf-1", pressure=1.0)
-assembly.add_load("my_pressure", pressure)
+assembly.add_load(pressure, name="my_pressure")
 ```
 
 ### 4.2 代码实现
@@ -192,9 +194,10 @@ class Pressure(BaseLoad):
 
 #### 压力势能
 
-根据散度定理，作用在封闭曲面上的均匀压力 $p$ 的势能为：
+根据散度定理，作用在封闭曲面上的均匀压力 $p$ 可以写成体积势能。当前 `Pressure` 实现按曲面围成的体积计算，因此目标表面应是方向一致的封闭表面集合：
 
-$$\Pi_p = -p \cdot V(\mathbf{u})$$
+$$W_p(\mathbf{u}) = -p \cdot V(\mathbf{u}),
+\qquad \Pi=U-W_p=U+pV$$
 
 其中 $V(\mathbf{u})$ 是变形后曲面所围区域的体积。对于参数曲面 $\mathbf{r}(\xi, \eta)$：
 
@@ -202,17 +205,21 @@ $$V = \frac{1}{3} \int_{\Omega} \det\left[\mathbf{r}, \frac{\partial\mathbf{r}}{
 
 #### 力向量（一阶导数）
 
-压力等效力通过对势能求导得到（链式法则）：
+`Pressure.get_stiffness` 返回的是载荷势能的一阶导数；Assembly 将其从结构残差中减去：
 
-$$f_a = -\frac{\partial \Pi_p}{\partial \mathbf{u}_a} = p \cdot \frac{\partial V}{\partial \mathbf{u}_a}$$
+$$q_a=\frac{\partial W_p}{\partial \mathbf{u}_a}
+   =-p\frac{\partial V}{\partial \mathbf{u}_a},
+\qquad R_p=-q$$
 
 其中 $\frac{\partial V}{\partial \mathbf{u}_a}$ 通过对行列式的导数计算，最终通过高斯积分得到各节点的等效节点力。
 
 #### 刚度矩阵（二阶导数）
 
-压力是**跟随力**（follower load）——力的大小和方向都随位移变化，因此刚度贡献非零：
+压力是**跟随力**（follower load）——力的方向随曲面法向变化，因此载荷势能的二阶导数一般非零：
 
-$$K_{ab} = \frac{\partial f_a}{\partial \mathbf{u}_b} = p \cdot \frac{\partial^2 V}{\partial \mathbf{u}_a \partial \mathbf{u}_b}$$
+$$K^W_{ab}=\frac{\partial q_a}{\partial \mathbf{u}_b}
+   =-p\frac{\partial^2 V}{\partial \mathbf{u}_a\partial\mathbf{u}_b},
+\qquad K^R=-K^W$$
 
 这对于几何非线性问题至关重要：忽略压力刚度会导致收敛缓慢甚至发散。
 
@@ -225,14 +232,14 @@ $$K_{ab} = \frac{\partial f_a}{\partial \mathbf{u}_b} = p \cdot \frac{\partial^2
 ```python
 from torchfea.model.loads import BodyForce
 
-# 对 instance 的 element_set 施加体力密度 [fx, fy, fz]（单位：力/体积）
+# 对 instance 的单元块 element_name 施加体力密度 [fx, fy, fz]（单位：力/体积）
 # 默认值为重力 [0, 0, -9.81e-6]（单位制为 N/mm³）
 body_force = BodyForce(
     instance_name="Part-1",
     element_name="EAll",
     force_density=[0.0, 0.0, -9.81e-6]
 )
-assembly.add_load("gravity", body_force)
+assembly.add_load(body_force, name="gravity")
 ```
 
 ### 5.2 代码实现
@@ -299,7 +306,7 @@ spring = Spring_RP_RP(
     rp_name1="RP-1", rp_name2="RP-2",
     k=100.0, rest_length=None  # None = 使用初始距离
 )
-assembly.add_load("spring_12", spring)
+assembly.add_load(spring, name="spring_12")
 ```
 
 ### 6.2 Spring_RP_Point 用法
@@ -312,7 +319,7 @@ spring = Spring_RP_Point(
     point=[100.0, 0.0, 0.0],  # 空间固定点
     k=50.0, rest_length=30.0
 )
-assembly.add_load("spring_ground", spring)
+assembly.add_load(spring, name="spring_ground")
 ```
 
 ### 6.3 代码实现
@@ -387,7 +394,7 @@ penalty = Penalty_DoF(
     k=1e6,           # 惩罚刚度
     obj_type="instance"  # 或 "auto" 自动检测
 )
-assembly.add_load("fix_dof5", penalty)
+assembly.add_load(penalty, name="fix_dof5")
 ```
 
 ### 7.2 代码实现
@@ -400,7 +407,7 @@ class Penalty_DoF(BaseLoad):
     def initialize(self, assembly):
         # 自动或手动定位对象，将局部索引 s 映射为全局索引
         obj = self._resolve_obj(assembly)
-        # global_s = RGC_list_indexStart[rgc_index] + s
+        # global_s = _RGC_list_indexStart[rgc_index] + s
         self._global_s = global_s
 
     def get_stiffness(self, RGC, if_onlyforce=False):
@@ -455,7 +462,7 @@ self_contact = ContactSelf(
     penalty_ratio_h=0.9,         # 距离衰减比率
     mesh_size=1.0                # 网格尺寸
 )
-assembly.add_load("self_contact", self_contact)
+assembly.add_load(self_contact, name="self_contact")
 
 # 两表面接触
 contact = Contact(
@@ -463,7 +470,7 @@ contact = Contact(
     surface_name1="Surf-Master", surface_name2="Surf-Slave",
     **same_penalty_params
 )
-assembly.add_load("contact_12", contact)
+assembly.add_load(contact, name="contact_12")
 ```
 
 ### 8.2 核心参数
@@ -561,10 +568,10 @@ $$h(L) = \text{smoothstep}\left(\frac{L_{\text{threshold}} - L}{r \cdot L_{\text
 def _total_Potential_Energy(self, RGC):
     energy = 0
     # 结构应变能
-    for ins in self._instances.values():
+    for ins in self._instances_enabled:
         energy += ins.potential_energy(RGC)
     # 所有载荷的势能（取负号）
-    for f in self._loads.values():
+    for f in self._loads_enabled:
         energy -= f.get_potential_energy(RGC)
     return energy
 ```
@@ -572,12 +579,12 @@ def _total_Potential_Energy(self, RGC):
 在 `Assembly.assemble_Stiffness_Matrix` 中，载荷的刚度和力贡献与结构贡献按 COO 格式拼接：
 
 ```python
-for f in self._loads.values():
+for f in self._loads_enabled:
     F_ind, F_val, K_ind, K_val = f.get_stiffness(RGC)
-    K_indices.append(-K_ind)  # 载荷刚度取负号
-    K_values.append(-K_val)
-    F_indices.append(-F_ind)  # 载荷力取负号
-    F_values.append(-F_val)
+    K_indices.append(K_ind)
+    K_values.append(-K_val)  # 残差切线 = 结构切线 - 载荷切线
+    R_indices.append(F_ind)
+    R_values.append(-F_val)  # 残差力 = 结构力 - 载荷力
 ```
 
 这种设计使得添加新载荷类型只需实现 `BaseLoad` 的三个核心方法，无需修改 Assembly 或 Solver。

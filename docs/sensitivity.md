@@ -1,14 +1,14 @@
-# Sensitivity Analysis (Adjoint Method)
+# 灵敏度分析（伴随法）
 
-Adjoint sensitivity analysis 是一种用于计算目标函数对设计变量的梯度的有效方法，常在优化和机器学习任务（如拓扑优化或基于物理知识的神经网络训练）中使用。在 \`torchfea\` 中，我们可以使用伴随法（Adjoint method）高效地计算敏度（梯度）。
+伴随灵敏度分析用于计算目标函数对设计变量的总导数，适合拓扑优化、几何优化和基于物理的学习。`torchfea` 的 `StaticImplicitSolver` 在静力平衡解的基础上，通过一次或少量额外线性求解构造梯度。
 
 ## 基本用法
 
-在 \`torchfea\` 的 `StaticImplicitSolver` 中提供了 \`get_sensitivity\` 方法，用于自动管理伴随方程的求解和梯度的自动求导计算。
+`torchfea` 的 `StaticImplicitSolver` 提供 `get_sensitivity`，并负责伴随方程、残差自动微分和结果清理。
 
 ### 1. 导入库与模型求解
 
-首先，设置模型并求解一次静力学结果。在运行敏度分析之前，你需要一个收敛的静力学解（\`fe_result\`）。以下示例代码演示了该过程：
+首先，设置模型并求解一次静力学结果。在运行灵敏度分析之前，你需要一个收敛的静力学解（`fe_result`）。以下示例代码演示了该过程：
 
 ```python
 import torch
@@ -20,20 +20,19 @@ fem.read_inp('example.inp')
 fe = torchfea.from_inp(fem)
 
 # 分配求解器
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 
 # 添加载荷和边界条件
 fe.assembly.add_load(...)
 fe.assembly.add_boundary(...)
 
-# 初始化并求解模型
-fe.initialize()
-feresult = fe.solve(tol_error=1e-6)
+# 求解器会在第一次 solve() 时自动初始化
+feresult = fe.solve()
 ```
 
 ### 2. 定义设计变量的应用函数 (`apply_func`)
 
-敏度分析需要知道设计变量如何影响有限元系统。你需要定义一个回调函数 `apply_func`，该函数会在敏度计算中修改 `Assembly` 的属性。这些修改**必须能通过 PyTorch 追踪其计算图 (Autograd)**。
+灵敏度分析需要知道设计变量如何影响有限元系统。你需要定义一个回调函数 `apply_func`，该函数会在灵敏度计算中修改 `Assembly` 的属性。这些修改**必须能通过 PyTorch 追踪其计算图 (Autograd)**。
 例如，以节点坐标作为设计变量：
 
 ```python
@@ -67,7 +66,7 @@ def compute_objective(fe_result: torchfea.solver.StaticResult,
 part = fe.assembly.get_part('final_model')
 initial_design_vars = part.nodes.clone().detach().reshape(-1)
 
-# 调用伴随敏度推导
+# 调用伴随灵敏度推导
 grad_sensi = fe.solver.get_sensitivity(
     fe_result=feresult,
     design_vars=initial_design_vars,
@@ -87,7 +86,7 @@ print('敏感度梯度:', grad_sensi)
 3. **伴随变量求解（Adjoint Equation Solve）**：使用求解静力学平衡方程时产生的刚度矩阵（已分解完成，使得求解非常快），求解伴随系统方程 $\boldsymbol{K} \boldsymbol{\lambda} = - \frac{\partial Obj}{\partial \boldsymbol{U}}$。
 4. **梯度重构（Total Sensitivity）**：通过求内积重构残差功方程并调用 PyTorch 自动微分（`work.backward()`），最终求出目标对象对全部设计变量的总导数 $\frac{\partial Obj}{\partial X}$。
 
-使用 \`torchfea\` 中的这种设计方式，保证了复杂非线性边界（如接触非线性）、材料非线性、大变形场景下的精确梯度计算，并且整个过程只需求解一次额外的线性方程组，相比由于摄动法求梯度的计算量呈指数级下降。
+使用 `torchfea` 中的这种设计方式，可以处理接触、材料非线性和大变形场景下的隐式梯度；基础伴随过程通常只需求解一次额外的线性方程组。相比摄动法逐个扰动设计变量，这在设计变量较多时更高效。
 
 ## 雅可比灵敏度分析 (Jacobian Sensitivity)
 
@@ -97,7 +96,7 @@ print('敏感度梯度:', grad_sensi)
 
 ### 用法举例
 
-与基础的伴随敏度分析类似，使用雅可比敏度分析同样需要准备好收敛的静力学解 `fe_result` 和设计变量。主要区别在于：
+与基础的伴随灵敏度分析类似，使用雅可比灵敏度分析同样需要准备好收敛的静力学解 `fe_result` 和设计变量。主要区别在于：
 
 1. 你需要指定关注哪些载荷参数（`load_names`）。
 2. 当前接口中，目标函数接收 `StaticResult`（单工况）或 `list[StaticResult]`（多工况）。
@@ -126,9 +125,13 @@ def compute_objective_jacobian(fe_results: list[torchfea.solver.StaticResult],
     return term_0 + term_1
 ```
 
-#### 2. 调用求解器推导雅可比敏度
+#### 2. 调用求解器推导雅可比灵敏度
 
 提供需要计算偏导的载荷名称列表（`load_names`），并传入目标函数，会自动推导目标函数对设计变量的偏导数：
+
+```python
+solver = fe.solver
+```
 
 单工况调用：
 
@@ -149,10 +152,10 @@ print('单工况雅可比灵敏度:', grad_sensi_jacobian)
 多工况调用：
 
 ```python
-# 指定需要求雅可比相关的载荷名称，例如面载荷 'pressure_1' 和 'pressure_2'
-focus_loads = ['pressure_1', 'pressure_2']
+# 指定需要求雅可比相关的载荷名称，例如面载荷 'pressure-1' 和 'pressure-2'
+focus_loads = ['pressure-1', 'pressure-2']
 
-# 调用雅可比敏度分析
+# 调用雅可比灵敏度分析
 grad_sensi_jacobian_batch = solver.get_jacobian_sensitivity_multistep(
     fe_results=[feresult1, feresult2],
     design_vars=part.nodes.reshape(-1),
@@ -164,7 +167,7 @@ grad_sensi_jacobian_batch = solver.get_jacobian_sensitivity_multistep(
 print('计算获得最终的灵敏度:', grad_sensi_jacobian_batch)
 ```
 
-注意: 当前 `get_jacobian_sensitivity` 与 `get_jacobian_sensitivity_multistep` 都返回一个 `torch.Tensor`（即最终设计灵敏度）。
+注意：当前 `get_jacobian_sensitivity` 与 `get_jacobian_sensitivity_multistep` 都返回一个 `torch.Tensor`（即最终设计灵敏度）。
 
 ### 雅可比矩阵的计算方法
 
@@ -192,7 +195,7 @@ print('计算获得最终的灵敏度:', grad_sensi_jacobian_batch)
 
 这种方法**逐参数计算** `dR/dp`，每次仅需一次 JVP 和一次回代求解。由于 $K$ 矩阵的分解已在前序静力分析中完成并缓存，每次回代的成本极低。当载荷参数数量 $N_p$ 较少时，该方法非常高效。
 
---
+---
 
 ## 理论与计算机制 (Theory & Implementation)
 
@@ -254,9 +257,9 @@ $$
 \frac{\mathrm{d}L}{\mathrm{d}b_m} = \frac{\partial L}{\partial b_m} + \lambda_r \frac{\partial R_r}{\partial b_m}
 $$
 
-最中对上述表达式进行自动微分即可得到目标函数对设计变量的总导数。
+最后对上述表达式进行自动微分即可得到目标函数对设计变量的总导数。
 
-### 2. 包含雅可比的高阶敏度推导
+### 2. 包含雅可比的高阶灵敏度推导
 
 在更复杂的优化场景中（例如针对参数不确定性的鲁棒性优化，或多载荷工况下的灵敏度分析），目标函数可能不仅依赖于系统当前的位移 $u_i$，还会显式依赖于系统位移对外设参数 $p_n$（如特定载荷边界大小、材料参数等）的雅可比矩阵 $J_{in} = \frac{\partial u_i}{\partial p_n}$。此时，目标函数可以一般化地表示为：
 
@@ -327,7 +330,7 @@ $$
 
 由于以上两步均可以直接复用原位移场静力分析已经完成因式分解（$LDL^T$ 分解）的 $K$ 矩阵，这些额外求解步骤的计算成本微乎其微。
 
-最终组合位移场相关的伴随敏度项，系统对设计变量 $b_m$ 的总灵敏度可以通过自动微分自动拼装，完整表达式收敛为：
+最终组合位移场相关的伴随灵敏度项，系统对设计变量 $b_m$ 的总灵敏度可以通过自动微分自动拼装，完整表达式收敛为：
 
 $$
 \frac{\mathrm{d}L}{\mathrm{d}b_m} = 
