@@ -27,7 +27,7 @@ path0 = pathlib.Path(current_path).parent / 'models' / 'C3D4Less.inp'
 fem.read_inp(path0)
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.01)
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
 
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='torchfea_cache_') as temp_dir:
 
     # torchfea.retrieve_source_code(dir_path, os.path.join(current_path, 'retrieved_source_code.py'))
 
-result = fe_new.solve(tol_error=0.01)
+result = fe_new.solve()
 # result.save('temp.npz')
 # result = torchfea.solver.StaticResult.load('temp.npz')
 # os.remove('temp.npz')
@@ -70,14 +70,14 @@ print(result.GC[-6:])
 
 
 # extern_surf = fe.loads['pressure-1'].surface_element.cpu().numpy()
-extern_surf = fe.assembly.get_instance('final_model').surfaces.get_elements('surface_0_All')[0]._elems[:, :3].cpu().numpy()
+extern_surf = fe_new.assembly.get_instance('final_model').surfaces.get_elements('surface_0_All')[0]._elems[:, :3].cpu().numpy()
 # extern_surf = fem.part['final_model'].surfaces['surface_1_All']
 
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U = fe.assembly._GC2RGC(result.GC)[0].cpu().numpy()
-undeformed_surface = fem.part['final_model'].nodes[:,1:]
+U = fe_new.GC2RGC(result.GC)[0].cpu().numpy()
+undeformed_surface = fe_new.assembly.get_part('final_model').nodes.cpu().numpy()
 deformed_surface = undeformed_surface + U
 
 Unorm = (U**2).sum(axis=1)**0.5

@@ -62,12 +62,12 @@ coo=extern_surf
 # Get the deformed surface coordinates
 
 # Prepare undeformed surface
-undeformed_surface = (fem.part['final_model'].nodes[:,1:]).cpu().numpy()
+undeformed_surface = fe.assembly.get_part('final_model').nodes.cpu().numpy()
 Unorm_list = []
 deformed_list = []
 
 for i in range(len(benchmark_data)):
-    U = fe.assembly._GC2RGC(torch.from_numpy(benchmark_data[i]))[0].cpu().numpy()
+    U = fe.GC2RGC(torch.from_numpy(benchmark_data[i]).to(fe.assembly.device))[0].cpu().numpy()
     deformed_surface = undeformed_surface + U
     Unorm = (U**2).sum(axis=1)**0.5
     deformed_list.append(deformed_surface.copy())

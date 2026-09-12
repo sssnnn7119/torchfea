@@ -4,7 +4,7 @@ def solvefea(fe):
     torch.set_default_device('cuda')
     torch.set_default_dtype(torch.float64)
     fe.change_device(torch.device('cuda'))
-    return fe.solve(tol_error=0.01)
+    return fe.solve()
 
 
 if __name__ == '__main__':
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     fem.read_inp(current_path + '/../models/C3D4Less.inp')
 
     fe = torchfea.from_inp(fem)
-    fe.solver = torchfea.solver.StaticImplicitSolver()
+    fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.01)
     # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
     # fe.elems['element-0'].set_materials(elems)
 
@@ -53,6 +53,7 @@ if __name__ == '__main__':
 
     t1 = time.time()
     fe.change_device(torch.device('cpu'))
+    fe.initialize()
 
 
 
@@ -63,7 +64,7 @@ if __name__ == '__main__':
     fearesult = ps.get()
     # fearesult = solvefea(fe)
 
-    print(fe.solver.GC)
+    print(fearesult.GC)
     print('ok')
 
 
@@ -74,8 +75,8 @@ if __name__ == '__main__':
     import pyvista as pv
 
     # Get the deformed surface coordinates
-    U = fe.assembly._GC2RGC(fe.solver.GC)[0].cpu().numpy()
-    undeformed_surface = fem.part['final_model'].nodes[:,1:]
+    U = fe.GC2RGC(fearesult.GC.to(fe.assembly.device))[0].cpu().numpy()
+    undeformed_surface = fe.assembly.get_part('final_model').nodes.cpu().numpy()
     deformed_surface = undeformed_surface + U
 
     Unorm = (U**2).sum(axis=1)**0.5

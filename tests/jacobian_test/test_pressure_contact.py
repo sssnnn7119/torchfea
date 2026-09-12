@@ -27,7 +27,7 @@ fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/C3D4contact.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.001)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -58,7 +58,7 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 
-fearesult = fe.solve(tol_error=0.001)
+fearesult = fe.solve()
 
 jacobian = fe.solver.get_jacobian(result=fearesult)
 

@@ -31,7 +31,7 @@ part = fe.assembly.get_part('final_model')
 # part.convert_linear_to_quadratic_elements(['element-0'], ['C3D10'], if_update_setnodes=True)
 # part.export_inp('Z:/temp/converted_model.inp')
 
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.01)
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
 
@@ -51,7 +51,7 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 
-result = fe.solve(tol_error=0.01)
+result = fe.solve()
 # result.save('temp.npz')
 # result = torchfea.solver.StaticResult.load('temp.npz')
 # os.remove('temp.npz')
@@ -66,7 +66,7 @@ extern_surf = fe.assembly.get_instance('final_model').surfaces.get_elements('sur
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U = fe.assembly._GC2RGC(result.GC)[0].cpu().numpy()
+U = fe.GC2RGC(result.GC)[0].cpu().numpy()
 undeformed_surface = fe.assembly.get_part('final_model').nodes.cpu().numpy()
 deformed_surface = undeformed_surface + U
 

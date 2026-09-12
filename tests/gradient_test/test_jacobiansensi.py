@@ -21,7 +21,7 @@ name = 'C3D4'
 fem.read_inp(current_path + '/C3D4.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -52,14 +52,14 @@ t1 = time.time()
 fe.initialize()
 if not os.path.exists('Z:/temp/%s_results1.npz' % name):
     load2.pressure = 0.02
-    feresult1 = fe.solve(tol_error=1e-6)
+    feresult1 = fe.solve()
     feresult1.save('Z:/temp/%s_results1.npz' % name)
 else:
     feresult1 = torchfea.solver.StaticResult.load('Z:/temp/%s_results1.npz' % name)
 
 if not os.path.exists('Z:/temp/%s_results2.npz' % name):
     load2.pressure = 0.05
-    feresult2 = fe.solve(tol_error=1e-6)
+    feresult2 = fe.solve()
     feresult2.save('Z:/temp/%s_results2.npz' % name)
 else:
     feresult2 = torchfea.solver.StaticResult.load('Z:/temp/%s_results2.npz' % name)
@@ -133,14 +133,14 @@ for i in range(index_test[0].shape[0]):
     part.nodes[indtest1, indtest2] += epsilon
 
     load2.pressure = 0.02
-    newresult1 = fe.solve(tol_error=1e-6, GC0=feresult1.GC)
-    GC1 = fe.assembly._GC.clone().detach()
+    newresult1 = fe.solve(GC0=feresult1.GC)
+    GC1 = newresult1.GC.clone().detach()
     jacobian1 = solver.get_jacobian(newresult1, load_names=['pressure-1', 'pressure-2'])
     newresult1.jacobian = jacobian1
     
     load2.pressure = 0.05
-    newresult2 = fe.solve(tol_error=1e-6, GC0=feresult2.GC)
-    GC2 = fe.assembly._GC.clone().detach()
+    newresult2 = fe.solve(GC0=feresult2.GC)
+    GC2 = newresult2.GC.clone().detach()
     jacobian2 = solver.get_jacobian(newresult2, load_names=['pressure-1', 'pressure-2'])
     newresult2.jacobian = jacobian2
 

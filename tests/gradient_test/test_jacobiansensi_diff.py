@@ -22,7 +22,7 @@ name = 'C3D10'
 fem.read_inp(current_path.parent / 'models' / f'{name}.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -49,7 +49,7 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 t1 = time.time()
 fe.initialize()
 if not os.path.exists('/run/media/song/缓存/temp/%s_results.npz' % name):
-    feresult = fe.solve(tol_error=1e-6)
+    feresult = fe.solve()
     feresult.save('/run/media/song/缓存/temp/%s_results.npz' % name)
 else:
     feresult = torchfea.solver.StaticResult.load('/run/media/song/缓存/temp/%s_results.npz' % name)
@@ -113,8 +113,8 @@ indtest2 = 0
 #     continue
 part.nodes = nodes0.detach().clone()
 part.nodes[indtest1, indtest2] += epsilon
-result1 = fe.solve(tol_error=1e-6, GC0=GC0)
-GC1 = fe.assembly._GC.clone().detach()
+result1 = fe.solve(GC0=GC0)
+GC1 = result1.GC.clone().detach()
 jacobian1 = solver.get_jacobian(result1, load_names=['pressure-1'])
 jacobian1 = torch.cat([jacobian1[load_name] for load_name in ['pressure-1']], dim=1)
 result1.jacobian = {'pressure-1': jacobian1}

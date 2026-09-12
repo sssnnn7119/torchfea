@@ -25,7 +25,7 @@ name = 'multi_case'
 fem.read_inp(current_path + '/%s.inp'%name)
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -62,19 +62,19 @@ pressure_list = [[0.00, 0.06, 0.06], [0.06, 0.06, 0.06]]
 
 if not os.path.exists(current_path + '/%s_results.npy' % name):
     for pind in range(len(pressure_list[0])):
-        fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[0][pind]
-    fe.solve(tol_error=1e-6)
-    GC0_list.append(fe.assembly._GC.clone().detach())
+        fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[0][pind]
+    result0 = fe.solve()
+    GC0_list.append(result0.GC.clone().detach())
 
     for pind in range(len(pressure_list[0])):
-        fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[1][pind]
-    fe.solve(tol_error=1e-6)
-    GC0_list.append(fe.assembly._GC.clone().detach())
+        fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[1][pind]
+    result0 = fe.solve()
+    GC0_list.append(result0.GC.clone().detach())
 
     np.save(current_path + '/%s_results' % name, np.array([gc.cpu().numpy() for gc in GC0_list]))
 else:
     GC0_list_np = np.load(current_path + '/%s_results.npy' % name)
-    GC0_list = [torch.from_numpy(gc).to(fe.assembly._GC.device).type(fe.assembly._GC.dtype) for gc in GC0_list_np]
+    GC0_list = [torch.from_numpy(gc).to(fe.assembly.device).type(torch.get_default_dtype()) for gc in GC0_list_np]
 
 GC0_list = torch.stack(GC0_list, dim=0)
 
@@ -93,11 +93,8 @@ def closure_work(nodes_diff: torch.Tensor):
     work = closure_adj(GC0_list).to(part.nodes.device)
     for i in range(GC0_list.shape[0]):
         GC0 = GC0_list[i].to(part.nodes.device)
-        fe.assembly._GC = GC0
-        fe.assembly._RGC = fe.assembly._GC2RGC(GC0)
-
         for pind in range(len(pressure_list[0])):
-            fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[i][pind]
+            fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[i][pind]
 
         
         R = fe.assembly.assemble_Stiffness_Matrix(GC=GC0)[0]
@@ -114,14 +111,14 @@ for i in range(len(GC0_list)):
     GC0 = GC0_list[i]
     RGC0 = fe.assembly._GC2RGC(GC0)
     for pind in range(len(pressure_list[0])):
-        fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[i][pind]
+        fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[i][pind]
     K_indices, K_values = fe.assembly.assemble_Stiffness_Matrix(
         RGC=RGC0)[1:]
 
     K_sp = sp.coo_matrix(
         (K_values.cpu().numpy(),
             (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())),
-        shape=(fe.assembly._GC.shape[0], fe.assembly._GC.shape[0])).tocsr()
+        shape=(GC0.shape[0], GC0.shape[0])).tocsr()
     K_solver = pypardiso.PyPardisoSolver()
     K_solver.factorize(K_sp)
 
@@ -155,15 +152,15 @@ for i in range(index_test[0].shape[0]):
 
     GC1_list = []
     for pind in range(len(pressure_list[0])):
-        fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[0][pind]
-    fe.solve(tol_error=1e-6, GC0=GC0_list[0])
-    GC1 = fe.assembly._GC.clone().detach()
+        fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[0][pind]
+    result1 = fe.solve(GC0=GC0_list[0])
+    GC1 = result1.GC.clone().detach()
     GC1_list.append(GC1)
     
     for pind in range(len(pressure_list[0])):
-        fe.assembly._loads['pressure-%d'%(pind+1)].pressure = pressure_list[1][pind]
-    fe.solve(tol_error=1e-6, GC0=GC0_list[1])
-    GC1 = fe.assembly._GC.clone().detach()
+        fe.assembly.get_load('pressure-%d' % (pind + 1)).pressure = pressure_list[1][pind]
+    result1 = fe.solve(GC0=GC0_list[1])
+    GC1 = result1.GC.clone().detach()
     GC1_list.append(GC1)
 
     diff = (closure_adj(GC1_list) - Rf0) / epsilon

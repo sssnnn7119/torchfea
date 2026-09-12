@@ -27,7 +27,7 @@ fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/C3D4.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.001)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -58,10 +58,10 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 
-fe.solve(tol_error=0.001)
+result = fe.solve()
 
 
-print(fe.assembly._GC[-6:])
+print(result.GC[-6:])
 print('ok')
 
 
@@ -75,7 +75,7 @@ intern_surf2 = ins1.surfaces.get_elements('surface_2_All')[0]._elems[:, :3].cpu(
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U = fe.assembly._RGC[ins1._RGC_index].cpu().numpy()
+U = fe.GC2RGC(result.GC)[ins1._RGC_index].cpu().numpy()
 undeformed_surface = ins1.nodes.cpu().numpy()
 deformed_surface = undeformed_surface + U
 

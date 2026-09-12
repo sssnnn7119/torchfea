@@ -32,10 +32,10 @@ fe2 = torchfea.from_inp(fem2)
 fe.assembly.add_part(fe2.assembly.get_part('base'), name='base')
 fe.assembly.add_instance(torchfea.Instance(part_name='base'), name='base')
 
-fe.assembly.get_part('rec').elems['element-0'].density = 1e-9
-fe.assembly.get_part('base').elems['element-0'].density = 1e-9
+fe.assembly.get_part('rec').elems['C3D4'].density = 1e-9
+fe.assembly.get_part('base').elems['C3D4'].density = 1e-9
 
-fe.assembly.add_load(torchfea.loads.BodyForce(instance_name='rec', element_name='element-0', force_density=[0, 0, -9.81e-6, ]))
+fe.assembly.add_load(torchfea.loads.BodyForce(instance_name='rec', element_name='C3D4', force_density=[0, 0, -9.81e-6, ]))
 fe.assembly.add_load(torchfea.loads.Contact(instance_name1='rec', instance_name2='base', surface_name1='contact', surface_name2='contact'))
 
 fe.assembly.add_boundary(
@@ -64,12 +64,12 @@ import pyvista as pv
 from time import sleep
 
 # Prepare undeformed surface
-undeformed_surface = (fem.part['rec'].nodes[:,1:])
+undeformed_surface = fe.assembly.get_part('rec').nodes.cpu().numpy()
 Unorm_list = []
 deformed_list = []
 
 for i in range(len(benchmark_data)):
-    U = fe.assembly._GC2RGC(torch.from_numpy(benchmark_data[i]))[1].cpu().numpy()
+    U = fe.GC2RGC(torch.from_numpy(benchmark_data[i]).to(fe.assembly.device))[1].cpu().numpy()
     deformed_surface = undeformed_surface + U
     Unorm = (U**2).sum(axis=1)**0.5
     deformed_list.append(deformed_surface.copy())

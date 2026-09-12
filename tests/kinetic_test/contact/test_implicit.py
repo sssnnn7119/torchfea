@@ -22,7 +22,7 @@ fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/rec.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=1.0)
+fe.solver = torchfea.solver.DynamicImplicitSolver(deltaT=1e-3, time_end=1.0, tol_error=1e-6)
 
 fem2 = torchfea.FEA_INP()
 fem2.read_inp(current_path + '/base.inp')
@@ -32,10 +32,10 @@ fe2 = torchfea.from_inp(fem2)
 fe.assembly.add_part(fe2.assembly.get_part('base'), name='base')
 fe.assembly.add_instance(torchfea.Instance(part_name='base'), name='base')
 
-fe.assembly.get_part('rec').elems['element-0'].density = 1e-9
-fe.assembly.get_part('base').elems['element-0'].density = 1e-9
+fe.assembly.get_part('rec').elems['C3D4'].density = 1e-9
+fe.assembly.get_part('base').elems['C3D4'].density = 1e-9
 
-fe.assembly.add_load(torchfea.loads.BodyForce(instance_name='rec', element_name='element-0', force_density=[0, 0, -9.81e-6, ]))
+fe.assembly.add_load(torchfea.loads.BodyForce(instance_name='rec', element_name='C3D4', force_density=[0, 0, -9.81e-6, ]))
 fe.assembly.add_load(torchfea.loads.Contact(instance_name1='rec', instance_name2='base', surface_name1='contact', surface_name2='contact'))
 
 fe.assembly.add_boundary(
@@ -44,9 +44,9 @@ fe.assembly.add_boundary(
 t1 = time.time()
 
 
-fe.solve(tol_error=1e-6)
+result = fe.solve()
 
 current_path1 = "Z:/temp/"
-np.save(current_path1 + '/implicit_high_gamma_GC.npy', np.array([fe.solver._GC_list[i].tolist() for i in range(len(fe.solver._GC_list))], dtype=np.float32))
-np.save(current_path1 + '/implicit_high_gamma_GV.npy', np.array([fe.solver._GV_list[i].tolist() for i in range(len(fe.solver._GV_list))], dtype=np.float32))
-np.save(current_path1 + '/implicit_high_gamma_GA.npy', np.array([fe.solver._GA_list[i].tolist() for i in range(len(fe.solver._GA_list))], dtype=np.float32))
+np.save(current_path1 + '/implicit_high_gamma_GC.npy', np.array([item.tolist() for item in result.GC_list], dtype=np.float32))
+np.save(current_path1 + '/implicit_high_gamma_GV.npy', np.array([item.tolist() for item in result.GV_list], dtype=np.float32))
+np.save(current_path1 + '/implicit_high_gamma_GA.npy', np.array([item.tolist() for item in result.GA_list], dtype=np.float32))

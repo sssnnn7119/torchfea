@@ -26,7 +26,7 @@ fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/C3D4Less.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.01)
 fe.assembly.get_part('final_model').exterior_surface = 'surface_0_All'
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -48,18 +48,18 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 t1 = time.time()
 
 
-fearesult = fe.solve(tol_error=0.01)
+fearesult = fe.solve()
 
 jacobian = fe.solver.get_jacobian(result=fearesult)
 
-GC0 = fe.assembly._GC.clone()
+GC0 = fearesult.GC.clone()
 
 perturbation = 1e-4
 
 pressure_load.pressure += perturbation
 
-fe.solve(GC0=GC0, if_initialize=False)
-GC1 = fe.assembly._GC.clone()
+result1 = fe.solve(GC0=GC0, if_initialize=False)
+GC1 = result1.GC.clone()
 
 # check jacobian
 GC_diff = (GC1 - GC0).cpu().numpy() / perturbation

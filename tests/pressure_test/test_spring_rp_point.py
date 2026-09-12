@@ -19,7 +19,7 @@ fem.read_inp(current_path + '/C3D4.inp')
 
 # 2) Build controller
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-3)
 
 # 3) Load: (optional) keep it simple: no external pressure so spring effect is visible
 # If desired, you can uncomment to add pressure
@@ -44,12 +44,12 @@ spring_load = torchfea.loads.Spring_RP_Point(rp_name=rp, point=[0, 0, 80], k=1e2
 fe.assembly.add_load(spring_load)
 
 # 7) Solve
-fe.solve(tol_error=1e-3)
+result = fe.solve()
 
 # 8) Report RP translation (first 3 DOFs)
-GC = fe.solver.GC
+GC = result.GC
 # Map GC back to RGC blocks
-RGC = fe.assembly._GC2RGC(GC)
+RGC = fe.GC2RGC(GC)
 # RP block index
 rp_obj = fe.assembly.get_reference_point(rp)
 rp_block = RGC[rp_obj._RGC_index]
@@ -63,8 +63,8 @@ extern_surf = fe.assembly.get_instance('final_model').surfaces.get_elements('sur
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U = fe.assembly._GC2RGC(fe.solver.GC)[0].cpu().numpy()
-undeformed_surface = (fem.part['final_model'].nodes[:,1:]).cpu().numpy()
+U = fe.GC2RGC(result.GC)[0].cpu().numpy()
+undeformed_surface = fe.assembly.get_part('final_model').nodes.cpu().numpy()
 deformed_surface = undeformed_surface + U
 
 Unorm = (U**2).sum(axis=1)**0.5

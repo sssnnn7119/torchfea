@@ -23,13 +23,14 @@ fem = torchfea.FEA_INP()
 # )
 
 path0 = pathlib.Path(current_path).parent / 'models' / 'C3D4Less.inp'
-dir_path = "/run/media/song/SS/minedata/learning/code/projects/torchfea/untitled.npz"
+dir_path = pathlib.Path(current_path).parent / 'models' / 'C3D4_model.npz'
 
 fe = torchfea.load_model(dir_path)
 
 # torchfea.retrieve_source_code(dir_path, os.path.join(current_path, 'retrieved_source_code.py'))
 
-result = fe.solve(tol_error=0.01)
+fe.solver.tol_error = 0.01
+result = fe.solve()
 # result.save('temp.npz')
 # result = torchfea.solver.StaticResult.load('temp.npz')
 # os.remove('temp.npz')
@@ -41,14 +42,15 @@ print(result.GC[-6:])
 
 
 # extern_surf = fe.loads['pressure-1'].surface_element.cpu().numpy()
-extern_surf = fe.assembly.get_instance('Part-1-1').surfaces.get_elements('extern')[0]._elems[:, :3].cpu().numpy()
+instance = fe.assembly.get_instance('final_model')
+extern_surf = instance.surfaces.get_elements('extern')[0]._elems[:, :3].cpu().numpy()
 # extern_surf = fem.part['final_model'].surfaces['surface_1_All']
 
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U = fe.assembly._GC2RGC(result.GC)[0].cpu().numpy()
-undeformed_surface = fe.assembly.get_instance('Part-1-1').nodes.cpu().numpy()
+U = fe.GC2RGC(result.GC)[instance._RGC_index].cpu().numpy()
+undeformed_surface = instance.nodes.cpu().numpy()
 deformed_surface = undeformed_surface + U
 
 Unorm = (U**2).sum(axis=1)**0.5

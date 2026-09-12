@@ -18,14 +18,16 @@ import torchfea
 name = 'C3D10'
 
 fe = torchfea.load_model(current_path.parent / 'models' / f'{name}_model.npz')
+fe.solver.tol_error = 1e-6
 fe.initialize()
 if not os.path.exists(current_path.parent / 'models' / f'{name}_results.npz'):
     
-    feresult = fe.solve(tol_error=1e-6)
+    feresult = fe.solve()
     feresult.save(current_path.parent / 'models' / f'{name}_results.npz')
 else:
     feresult = torchfea.solver.StaticResult.load(current_path.parent / 'models' / f'{name}_results.npz')
 
+feresult.GC = feresult.GC.to(fe.assembly.device)
 fe.initialize()
 GC0 = feresult.GC.clone().detach()
 RGC0 = fe.assembly._GC2RGC(GC0)
@@ -36,7 +38,7 @@ K_indices, K_values = fe.assembly.assemble_Stiffness_Matrix(
 K_sp = sp.coo_matrix(
     (K_values.cpu().numpy(),
         (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())),
-    shape=(fe.assembly._GC.shape[0], fe.assembly._GC.shape[0])).tocsr()
+    shape=(GC0.shape[0], GC0.shape[0])).tocsr()
 K_solver = pypardiso.PyPardisoSolver()
 K_solver.factorize(K_sp)
 
@@ -119,4 +121,3 @@ for i in range(len(test_pair)):
     
 
     
-

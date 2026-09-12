@@ -26,7 +26,7 @@ fem = torchfea.FEA_INP()
 fem.read_inp(current_path + '/Free.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=0.001)
 fe.assembly.get_instance('Part-2')._translation = torch.tensor([0, 0, 40.])
 fe.assembly.get_instance('Part-2')._rotation = torch.tensor([0., 0., 0.1])
 
@@ -55,10 +55,10 @@ fe.assembly.add_load(torchfea.loads.Contact(instance_name1='final_model', instan
 
 t1 = time.time()
 
-fe.solve(tol_error=0.001)
+result = fe.solve()
 
 
-print(fe.assembly._GC[-6:])
+print(result.GC[-6:])
 print('ok')
 
 
@@ -72,8 +72,9 @@ extern_surf2 = ins2.surfaces.get_elements('surfaceblock')[0]._elems.cpu().numpy(
 import pyvista as pv
 
 # Get the deformed surface coordinates
-U1 = fe.assembly._RGC[ins1._RGC_index].cpu().numpy()
-U2 = fe.assembly._RGC[ins2._RGC_index].cpu().numpy()
+RGC = fe.GC2RGC(result.GC)
+U1 = RGC[ins1._RGC_index].cpu().numpy()
+U2 = RGC[ins2._RGC_index].cpu().numpy()
 undeformed_surface1 = ins1.nodes.cpu().numpy()
 undeformed_surface2 = ins2.nodes.cpu().numpy()
 deformed_surface1 = undeformed_surface1 + U1

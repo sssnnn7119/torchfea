@@ -19,7 +19,7 @@ name = 'C3D4'
 fem.read_inp(current_path + '/C3D4.inp')
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)
@@ -51,7 +51,7 @@ t1 = time.time()
 t1 = time.time()
 fe.initialize()
 if not os.path.exists('Z:/temp/%s_results.npz' % name):
-    feresult = fe.solve(tol_error=1e-6)
+    feresult = fe.solve()
     feresult.save('Z:/temp/%s_results.npz' % name)
 else:
     feresult = torchfea.solver.StaticResult.load('Z:/temp/%s_results.npz' % name)
@@ -96,7 +96,7 @@ grad_pos = torch.autograd.functional.jacobian(closure_work, part.nodes)
 
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 # fe._maximum_step_length = 0.3
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
 # fe.elems['element-0'].set_materials(elems)

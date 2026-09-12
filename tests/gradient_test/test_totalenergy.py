@@ -25,7 +25,7 @@ name = 'contact_each'
 fem.read_inp(current_path + '/%s.inp'%name)
 
 fe = torchfea.from_inp(fem)
-fe.solver = torchfea.solver.StaticImplicitSolver()
+fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
 fe.assembly.get_instance('Part-2')._translation = torch.tensor([0, 0, 40.])
 
 # elems = torch_fea.materials.initialize_materials(2, torch.tensor([[1.44, 0.45]]))
@@ -56,7 +56,7 @@ t1 = time.time()
 
 fe.initialize()
 if not os.path.exists('Z:/temp/%s_results.npz' % name):
-    fearesult = fe.solve(tol_error=1e-6)
+    fearesult = fe.solve()
     fearesult.save('Z:/temp/%s_results.npz' % name)
 else:
     fearesult = torchfea.solver.StaticResult.load('Z:/temp/%s_results.npz' % name)
@@ -140,8 +140,8 @@ for i in range(index_test[0].shape[0]):
     #     continue
     part.nodes = nodes0.detach().clone()
     part.nodes[indtest1, indtest2] += epsilon
-    fe.solve(tol_error=1e-6, GC0=GC0)
-    GC1 = fe.assembly._GC.clone().detach()
+    result1 = fe.solve(GC0=GC0)
+    GC1 = result1.GC.clone().detach()
     R1 = fe.assembly.assemble_Stiffness_Matrix(RGC=fe.assembly._GC2RGC(GC0))[0]
     E1 = fe.assembly._total_Potential_Energy(GC=GC1).item()
 
