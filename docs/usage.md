@@ -2,7 +2,7 @@
 
 本文档给出一条从模型输入到结果后处理的完整路径。推荐先理解“模型定义 → 工况 → 初始化 → 求解 → 结果”的顺序，再根据需要阅读 [材料模型与本构公式](materials.md)、[载荷](loads.md)、[求解器](solver.md)、[有限元单元](elements/elements_types_CHN.md) 和 [等参变换与数值积分](elements/isoparametric_and_quadrature_CHN.md)。
 
-仓库中的可运行参考主要位于 `tests/`：压力算例在 `tests/pressure_test/`，材料比较在 `tests/material_test/`，动力学在 `tests/kinetic_test/`，接触在 `tests/contact_test/`，灵敏度在 `tests/gradient_test/`。
+仓库中的可运行参考主要位于 `examples/`：压力算例在 `examples/pressure_test/`，材料比较在 `examples/material_test/`，动力学在 `examples/kinetic_test/`，接触在 `examples/contact_test/`，灵敏度在 `examples/gradient_test/`。
 
 ## 1. 环境与数值约定
 
@@ -106,6 +106,8 @@ fe.assembly.add_boundary(
 ```
 
 ### 4.2 参考点耦合、接触和其他载荷
+
+参考点耦合和参考点之间的运动学关节属于坐标消元约束。其 RGC/GC 组织、正向坐标重构以及残差和刚度映射算法见 [约束算法说明](constraints.md)。
 
 ```python
 fe.assembly.add_constraint(

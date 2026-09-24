@@ -1,12 +1,10 @@
-
 import numpy as np
-import torch
-from . import Instance
-from . import ReferencePoint
-from . import loads, constraints, boundarys
-from .part import _Surfaces, Part
 import pyvista as pv
+import torch
+
 from ..interfaces import Serializable
+from . import Instance, ReferencePoint, boundarys, constraints, loads
+from .part import Part, _Surfaces
 
 
 class WorkCondition(Serializable):
@@ -17,12 +15,20 @@ class WorkCondition(Serializable):
         self.constraint_enabled: dict[str, bool] = {}
         self.boundary_enabled: dict[str, bool] = {}
 
-class Assembly(Serializable):
 
-    _serialized_attributes: list[str] = ['_parts', '_instances', '_surfaces', '_reference_points', '_loads', '_constraints', '_boundarys']
+class Assembly(Serializable):
+    _serialized_attributes: list[str] = [
+        "_parts",
+        "_instances",
+        "_surfaces",
+        "_reference_points",
+        "_loads",
+        "_constraints",
+        "_boundarys",
+    ]
 
     def __init__(self):
-        
+
         self.device = torch.zeros(1).device
         """The default device where the tensors are stored (CPU or GPU)."""
 
@@ -34,7 +40,7 @@ class Assembly(Serializable):
 
         self._surfaces: dict[(str, str), _Surfaces] = {}
         """Dictionary to store surface sets with keys as (instance_name, set_name) and values as Surface objects."""
-        
+
         self._reference_points: dict[str, ReferencePoint] = {}
         """Dictionary to store reference points with reference point names as keys and ReferencePoint objects as values."""
         self._loads: dict[str, loads.BaseLoad] = {}
@@ -48,8 +54,12 @@ class Assembly(Serializable):
         """List to keep track of enabled instances for analysis."""
         self._loads_enabled: list[loads.BaseLoad] = []
         """List to keep track of enabled loads for analysis."""
-        self._constraints_enabled: list[constraints.BaseConstraint] = []
-        """List to keep track of enabled constraints for analysis."""
+        self._constraints_forward: list[constraints.BaseConstraint] = []
+        """Enabled kinematic constraints in coordinate-reconstruction order."""
+
+        self._constraints_backward: list[constraints.BaseConstraint] = []
+        """Enabled kinematic constraints in residual-reduction order."""
+
         self._boundarys_enabled: list[boundarys.BaseBoundary] = []
         """List to keep track of enabled boundary conditions for analysis."""
 
@@ -118,14 +128,27 @@ class Assembly(Serializable):
 
         def callback(picked_point, picker):
             point_id = picker.GetPointId()
-            if point_id < 0: return
+            if point_id < 0:
+                return
             point = list(meshes.values())[0].points[point_id]
             print(f"Node Index: {point_id}, Coordinates: {point}")
-            plotter.add_point_labels([point], [f"ID: {point_id}"], point_size=20, font_size=18, name="picked_label", always_visible=True)
+            plotter.add_point_labels(
+                [point],
+                [f"ID: {point_id}"],
+                point_size=20,
+                font_size=18,
+                name="picked_label",
+                always_visible=True,
+            )
 
-        plotter.enable_point_picking(callback=callback, show_message=True, use_picker=True, show_point=True, color='red', picker='point')
-
-
+        plotter.enable_point_picking(
+            callback=callback,
+            show_message=True,
+            use_picker=True,
+            show_point=True,
+            color="red",
+            picker="point",
+        )
 
     def show_ins(self, ins_name: str, GC: torch.Tensor = None, surf_name: str = None):
         """
@@ -154,7 +177,7 @@ class Assembly(Serializable):
     def show_all(self, GC: torch.Tensor = None):
         """
         Visualize all instances in the assembly.
-        
+
         before calling this function, make sure each Part has an exterior
         surface set (``part.exterior_surface``).
 
@@ -172,33 +195,36 @@ class Assembly(Serializable):
             plotter.show()
         finally:
             plotter.close()
+
     # endregion
 
     # region Initialization
 
     class _Initializer:
-
         @staticmethod
-        def _sort_objects(assembly: 'Assembly'):
+        def _sort_objects(assembly: "Assembly"):
             assembly._parts = dict(sorted(assembly._parts.items()))
             assembly._instances = dict(sorted(assembly._instances.items()))
             assembly._loads = dict(sorted(assembly._loads.items()))
             assembly._constraints = dict(sorted(assembly._constraints.items()))
             assembly._boundarys = dict(sorted(assembly._boundarys.items()))
-            assembly._reference_points = dict(sorted(assembly._reference_points.items()))
+            assembly._reference_points = dict(
+                sorted(assembly._reference_points.items())
+            )
 
         @staticmethod
-        def _initialize_instance_with_part(assembly: 'Assembly'):
+        def _initialize_instance_with_part(assembly: "Assembly"):
             for ins in assembly._instances.values():
                 part_name = ins.part_name
                 if part_name not in assembly._parts:
                     raise ValueError(
-                        f"Part '{part_name}' not found for instance '{ins}'.")
+                        f"Part '{part_name}' not found for instance '{ins}'."
+                    )
                 ins.part = assembly._parts[part_name]
                 ins._RGC_requirements = tuple(ins.part.nodes.shape)
 
         @staticmethod
-        def _initialize_RGC(assembly: 'Assembly'):
+        def _initialize_RGC(assembly: "Assembly"):
             assembly._RGC = []
             assembly._RGC_remain_index = []
             assembly._RGC_list_indexStart = [0]
@@ -206,32 +232,37 @@ class Assembly(Serializable):
 
             for ins in assembly._instances.keys():
                 RGC_index = assembly._allocate_RGC(
-                    size=assembly._instances[ins]._RGC_requirements)
+                    size=assembly._instances[ins]._RGC_requirements
+                )
                 assembly._instances[ins].set_RGC_index(RGC_index)
 
             for rp in assembly._reference_points.keys():
                 RGC_index = assembly._allocate_RGC(
-                    size=assembly._reference_points[rp]._RGC_requirements)
+                    size=assembly._reference_points[rp]._RGC_requirements
+                )
                 assembly._reference_points[rp].set_RGC_index(RGC_index)
                 assembly._RGC[RGC_index][-1] = 1e-5
 
             for f in assembly._loads.keys():
                 RGC_index = assembly._allocate_RGC(
-                    size=assembly._loads[f]._RGC_requirements)
+                    size=assembly._loads[f]._RGC_requirements
+                )
                 assembly._loads[f].set_RGC_index(RGC_index)
 
             for c in assembly._constraints.keys():
                 RGC_index = assembly._allocate_RGC(
-                    size=assembly._constraints[c]._RGC_requirements)
+                    size=assembly._constraints[c]._RGC_requirements
+                )
                 assembly._constraints[c].set_RGC_index(RGC_index)
 
             for b in assembly._boundarys.keys():
                 RGC_index = assembly._allocate_RGC(
-                    size=assembly._boundarys[b]._RGC_requirements)
+                    size=assembly._boundarys[b]._RGC_requirements
+                )
                 assembly._boundarys[b].set_RGC_index(RGC_index)
-        
+
         @staticmethod
-        def _initialize_objects(assembly: 'Assembly'):
+        def _initialize_objects(assembly: "Assembly"):
             for part in assembly._parts.values():
                 part.initialize()
 
@@ -248,7 +279,7 @@ class Assembly(Serializable):
                 b.initialize(assembly)
 
         @staticmethod
-        def _initialize_enabled_objects(assembly: 'Assembly'):
+        def _initialize_enabled_objects(assembly: "Assembly"):
 
             assembly._instances_enabled = []
             for ins in assembly._instances.values():
@@ -262,19 +293,22 @@ class Assembly(Serializable):
                     assembly._loads_enabled.append(f)
                     f.enabled = True  # Set default to True if enabled is None
 
-            assembly._constraints_enabled = []
+            # Constraints are represented by the derived forward/backward
+            # execution plans rather than a third enabled list.  Normalize
+            # the default state here so the plan builder preserves the
+            # historical ``enabled=None -> True`` behavior.
             for c in assembly._constraints.values():
-                if c.enabled or (c.enabled is None) :
-                    assembly._constraints_enabled.append(c)
-                    c.enabled = True  # Set default to True if enabled is None
+                if c.enabled is None:
+                    c.enabled = True
 
             assembly._boundarys_enabled = []
             for b in assembly._boundarys.values():
                 if b.enabled or (b.enabled is None):
                     assembly._boundarys_enabled.append(b)
                     b.enabled = True  # Set default to True if enabled is None
+
         @staticmethod
-        def initialize(assembly: 'Assembly'):
+        def initialize(assembly: "Assembly"):
             Assembly._Initializer._sort_objects(assembly)
             Assembly._Initializer._initialize_instance_with_part(assembly)
             Assembly._Initializer._initialize_RGC(assembly)
@@ -293,47 +327,126 @@ class Assembly(Serializable):
         """
 
         self._Initializer.initialize(self)
-
+        # define_required_DoFs refreshes enabled objects, builds the
+        # dependency plan, and creates the reduced-coordinate maps.
         self.define_required_DoFs()
 
+    def _build_constraint_execution_plan(self):
+        """Build deterministic forward and reverse constraint plans.
+
+        ``_constraints`` remains the persistent name-to-object registry.  The
+        derived lists below are runtime data.  A constraint whose output RGC
+        block is consumed by another constraint must execute first during
+        coordinate reconstruction.  Residual and tangent reduction use the
+        reverse order.
+        """
+        enabled = {
+            name: constraint
+            for name, constraint in self._constraints.items()
+            if constraint.enabled
+        }
+
+        names = list(enabled.keys())
+        graph = {name: set() for name in names}
+        indegree = {name: 0 for name in names}
+
+        inputs = {
+            name: set(constraint.get_input_blocks())
+            for name, constraint in enabled.items()
+        }
+        outputs = {
+            name: set(constraint.get_output_blocks())
+            for name, constraint in enabled.items()
+        }
+
+        for name_a in names:
+            for name_b in names:
+                if name_a == name_b:
+                    continue
+
+                # A writes a block consumed by B: A -> B.
+                if outputs[name_a] & inputs[name_b]:
+                    if name_b not in graph[name_a]:
+                        graph[name_a].add(name_b)
+                        indegree[name_b] += 1
+
+        # Kahn's algorithm.  Sorting the ready queue preserves the assembly's
+        # deterministic dictionary order whenever multiple branches are
+        # independent.
+        ready = sorted(name for name in names if indegree[name] == 0)
+        order = []
+
+        while ready:
+            name = ready.pop(0)
+            order.append(name)
+
+            for target in sorted(graph[name]):
+                indegree[target] -= 1
+                if indegree[target] == 0:
+                    ready.append(target)
+            ready.sort()
+
+        if len(order) != len(names):
+            cyclic = [name for name in names if indegree[name] > 0]
+            raise ValueError(
+                "Kinematic constraint dependency cycle detected among: "
+                + ", ".join(cyclic)
+            )
+
+        self._constraints_forward = [enabled[name] for name in order]
+        self._constraints_backward = list(reversed(self._constraints_forward))
+
     def define_required_DoFs(self):
+        # Rebuild the enabled lists as this method is also used after a work
+        # condition changes object enablement.
+        self._Initializer._initialize_enabled_objects(self)
+        self._build_constraint_execution_plan()
+
+        # This method may be called repeatedly.  Start from a clean mask so a
+        # previously enabled constraint cannot leave stale active DoFs behind.
+        self._RGC_remain_index = [np.zeros(size, dtype=bool) for size in self._RGC_size]
+
         for ins in self._instances_enabled:
             self._RGC_remain_index = ins.set_required_DoFs(self._RGC_remain_index)
 
         for f in self._loads_enabled:
             self._RGC_remain_index = f.set_required_DoFs(self._RGC_remain_index)
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_backward:
             self._RGC_remain_index = c.set_required_DoFs(self._RGC_remain_index)
 
-        # Finally, apply boundary conditions to deactivate Dirichlet DOFs
         for b in self._boundarys_enabled:
             self._RGC_remain_index = b.set_required_DoFs(self._RGC_remain_index)
 
-        self._RGC_remain_index_flatten = np.concatenate([
-            self._RGC_remain_index[i].reshape(-1)
-            for i in range(len(self._RGC_remain_index))
-        ]).tolist()
+        self._RGC_remain_index_flatten = np.concatenate(
+            [
+                self._RGC_remain_index[i].reshape(-1)
+                for i in range(len(self._RGC_remain_index))
+            ]
+        ).tolist()
         self._RGC_remain_index_flatten = torch.tensor(
-            self._RGC_remain_index_flatten, dtype=torch.bool)
+            self._RGC_remain_index_flatten, dtype=torch.bool
+        )
 
         # GC core
         self._GC = self._RGC2GC(self._RGC)
-        self._GC_list_indexStart = np.cumsum([
-            self._RGC_remain_index[j].sum()
-            for j in range(len(self._RGC_remain_index))
-        ]).tolist()
+        self._GC_list_indexStart = np.cumsum(
+            [
+                self._RGC_remain_index[j].sum()
+                for j in range(len(self._RGC_remain_index))
+            ]
+        ).tolist()
         self._GC_list_indexStart.insert(0, 0)
 
     def initialize_dynamic(self):
-            
+
         for ins in self._instances_enabled:
             ins.initialize_dynamic()
 
         for l in self._loads_enabled:
             l.initialize_dynamic()
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             c.initialize_dynamic()
 
         # assemble the redundant mass matrix
@@ -362,39 +475,43 @@ class Assembly(Serializable):
         for l in self._loads_enabled:
             l.reinitialize(RGC)
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             c.reinitialize(RGC)
+
     # endregion
 
     # region Stiffness Matrix Assembly
 
-    def assemble_force(self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None) -> torch.Tensor:
-        
+    def assemble_force(
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
+    ) -> torch.Tensor:
+
         if RGC is None:
             if GC is None:
                 raise ValueError("Either RGC or GC must be provided.")
             RGC = self._GC2RGC(GC)
 
-        #region evaluate the structural K and R
+        # region evaluate the structural K and R
 
         R_values = []
         R_indices = []
 
         for ins in self._instances_enabled:
-            Ra_indice, Ra_values = ins.structural_stiffness(
-                RGC=RGC, if_onlyforce=True)
+            Ra_indice, Ra_values = ins.structural_stiffness(RGC=RGC, if_onlyforce=True)
             R_values.append(Ra_values)
             R_indices.append(Ra_indice)
 
-
         ff = []
         for f in self._loads_enabled:
-            Rf_indice, Rf_values = f.get_stiffness(
-                RGC=RGC, if_onlyforce=True)
+            Rf_indice, Rf_values = f.get_stiffness(RGC=RGC, if_onlyforce=True)
             R_values.append(-Rf_values)
             R_indices.append(Rf_indice)
 
-            ff.append(torch.zeros(self._RGC_list_indexStart[-1]).scatter_add_(0, Rf_indice.to(torch.int64), Rf_values))
+            ff.append(
+                torch.zeros(self._RGC_list_indexStart[-1]).scatter_add_(
+                    0, Rf_indice.to(torch.int64), Rf_values
+                )
+            )
 
         # endregion
 
@@ -405,21 +522,24 @@ class Assembly(Serializable):
         # Convert R_indices to int64 explicitly for scatter operation
         R0.scatter_add_(0, R_indices.to(torch.int64), R_values)
         R = R0
-        #region consider the constraints
-        for c in self._constraints_enabled:
-            R_new = c.modify_R_K(
-                RGC, R0, if_onlyforce=True)
+        # region consider the constraints
+        # Reduce coordinate transformations from leaves back to masters.  The
+        # accumulated residual is passed on so a downstream constraint can
+        # consume force already transferred by an upstream reduction.
+        for c in self._constraints_backward:
+            R_new = c.modify_R_K(RGC, R, if_onlyforce=True)
             R = R + R_new
-        #endregion
+        # endregion
 
         # get the global stiffness matrix and force vector
 
         R = R[self._RGC_remain_index_flatten]
 
         return R
-    
-    def assemble_Stiffness_Matrix(self,
-                                   RGC: list[torch.Tensor] = None, GC: torch.Tensor = None):
+
+    def assemble_Stiffness_Matrix(
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
+    ):
         """
         Assemble the stiffness matrix.
 
@@ -439,23 +559,24 @@ class Assembly(Serializable):
                 raise ValueError("Either RGC or GC must be provided.")
             RGC = self._GC2RGC(GC)
 
-        #region evaluate the structural K and R
-        R0, K_indices, K_values = self._assemble_generalized_Matrix(
-            RGC)
+        # region evaluate the structural K and R
+        R0, K_indices, K_values = self._assemble_generalized_Matrix(RGC)
         # endregion
         R, K_indices, K_values = self._assemble_reduced_Matrix(
-            RGC, R0, K_indices, K_values)
+            RGC, R0, K_indices, K_values
+        )
 
         return R, K_indices, K_values
 
-    def _assemble_generalized_Matrix(self,
-                                     RGC: list[torch.Tensor] = None, GC: torch.Tensor = None):
+    def _assemble_generalized_Matrix(
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
+    ):
         if RGC is None:
             if GC is None:
                 raise ValueError("Either RGC or GC must be provided.")
             RGC = self._GC2RGC(GC)
 
-        #region evaluate the structural K and R
+        # region evaluate the structural K and R
         K_values = []
         K_indices = []
         R_values = []
@@ -463,7 +584,8 @@ class Assembly(Serializable):
 
         for ins in self._instances_enabled:
             Ra_indice, Ra_values, Ka_indice, Ka_value = ins.structural_stiffness(
-                RGC=RGC)
+                RGC=RGC
+            )
             K_values.append(Ka_value)
             K_indices.append(Ka_indice)
             R_values.append(Ra_values)
@@ -471,14 +593,17 @@ class Assembly(Serializable):
 
         ff = []
         for f in self._loads_enabled:
-            Rf_indice, Rf_values, Kf_indice, Kf_value = f.get_stiffness(
-                RGC=RGC)
+            Rf_indice, Rf_values, Kf_indice, Kf_value = f.get_stiffness(RGC=RGC)
             K_values.append(-Kf_value)
             K_indices.append(Kf_indice)
             R_values.append(-Rf_values)
             R_indices.append(Rf_indice)
 
-            ff.append(torch.zeros(self._RGC_list_indexStart[-1]).scatter_add_(0, Rf_indice.to(torch.int64), Rf_values))
+            ff.append(
+                torch.zeros(self._RGC_list_indexStart[-1]).scatter_add_(
+                    0, Rf_indice.to(torch.int64), Rf_values
+                )
+            )
         # endregion
 
         K_indices = torch.cat(K_indices, dim=1)
@@ -491,38 +616,45 @@ class Assembly(Serializable):
         R0.scatter_add_(0, R_indices.to(torch.int64), R_values)
         return R0, K_indices, K_values
 
-    def _assemble_reduced_Matrix(self, RGC: list[torch.Tensor],
-                                 R0: torch.Tensor, K_indices: torch.Tensor,
-                                 K_values: torch.Tensor):
+    def _assemble_reduced_Matrix(
+        self,
+        RGC: list[torch.Tensor],
+        R0: torch.Tensor,
+        K_indices: torch.Tensor,
+        K_values: torch.Tensor,
+    ):
 
         R = R0
-        #region consider the constraints
-        for c in self._constraints_enabled:
-            R_new, Kc_indices, Kc_values = c.modify_R_K(
-                RGC, R0, K_indices, K_values)
+        # region consider the constraints
+        # Residual/tangent reduction follows the reverse dependency order.
+        # K_indices/K_values already contain contributions added by previous
+        # constraints in this loop.
+        for c in self._constraints_backward:
+            R_new, Kc_indices, Kc_values = c.modify_R_K(RGC, R, K_indices, K_values)
             K_indices = torch.cat([K_indices, Kc_indices], dim=1)
             K_values = torch.cat([K_values, Kc_values])
             R = R + R_new
 
-        #endregion
+        # endregion
 
         # get the global stiffness matrix and force vector
-        index_remain = self._RGC_remain_index_flatten[K_indices[0].cpu(
-        )] & self._RGC_remain_index_flatten[K_indices[1].cpu()]
+        index_remain = (
+            self._RGC_remain_index_flatten[K_indices[0].cpu()]
+            & self._RGC_remain_index_flatten[K_indices[1].cpu()]
+        )
         K_values = K_values[index_remain]
         K_indices = K_indices[:, index_remain]
 
-
         K_indices[0] = K_indices[0].unique(return_inverse=True)[1]
         K_indices[1] = K_indices[1].unique(return_inverse=True)[1]
-
 
         R = R[self._RGC_remain_index_flatten]
 
         return R, K_indices, K_values
 
-    def _total_Potential_Energy(self,
-                                RGC: list[torch.Tensor] = None, GC: torch.Tensor = None) -> float:
+    def _total_Potential_Energy(
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
+    ) -> float:
         """
         Calculate the total potential energy of the finite element model.
 
@@ -548,7 +680,7 @@ class Assembly(Serializable):
             energy = energy - f.get_potential_energy(RGC=RGC)
 
         return energy
-    
+
     # endregion
 
     # region for Dynamic Mass Matrix
@@ -557,17 +689,39 @@ class Assembly(Serializable):
         mass_indices = [self._mass_matrix_indices]
         mass_values = [self._mass_matrix_values]
         RGC = self._GC2RGC(GC_now)
-        for c in self._constraints_enabled:
-            indices_now, values_now = c.modify_mass_matrix(mass_indices=self._mass_matrix_indices, mass_values=self._mass_matrix_values, RGC=RGC)
+
+        current_indices = self._mass_matrix_indices
+        current_values = self._mass_matrix_values
+
+        # Mass transformations use the same reverse dependency direction as
+        # stiffness reduction and consume the accumulated matrix.
+        for c in self._constraints_backward:
+            transformed = c.modify_mass_matrix(
+                mass_indices=current_indices,
+                mass_values=current_values,
+                RGC=RGC,
+            )
+            if transformed is None:
+                raise RuntimeError(
+                    f"Constraint '{c.__class__.__name__}' returned None "
+                    "from modify_mass_matrix()."
+                )
+
+            indices_now, values_now = transformed
             mass_indices.append(indices_now)
             mass_values.append(values_now)
+
+            current_indices = torch.cat(mass_indices, dim=1)
+            current_values = torch.cat(mass_values, dim=0)
 
         mass_indices = torch.cat(mass_indices, dim=1)
         mass_values = torch.cat(mass_values, dim=0)
 
         # get the global stiffness matrix and force vector
-        index_remain = self._RGC_remain_index_flatten[mass_indices[0].cpu(
-        )] & self._RGC_remain_index_flatten[mass_indices[1].cpu()]
+        index_remain = (
+            self._RGC_remain_index_flatten[mass_indices[0].cpu()]
+            & self._RGC_remain_index_flatten[mass_indices[1].cpu()]
+        )
         mass_values = mass_values[index_remain]
         mass_indices = mass_indices[:, index_remain]
 
@@ -596,8 +750,7 @@ class Assembly(Serializable):
         self._RGC.append(torch.randn(size) * 0)
         self._RGC_remain_index.append(np.zeros(size, dtype=bool))
         self._RGC_size.append(size)
-        self._RGC_list_indexStart.append(
-            self._RGC_list_indexStart[-1] + np.prod(size))
+        self._RGC_list_indexStart.append(self._RGC_list_indexStart[-1] + np.prod(size))
 
         return index_now
 
@@ -615,9 +768,10 @@ class Assembly(Serializable):
         for i in range(len(self._RGC_remain_index)):
             RGC.append(torch.zeros(self._RGC_size[i]))
             RGC[-1][self._RGC_remain_index[i]] = GC[
-                self._GC_list_indexStart[i]:self._GC_list_indexStart[i + 1]]
+                self._GC_list_indexStart[i] : self._GC_list_indexStart[i + 1]
+            ]
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             RGC = c.modify_RGC(RGC)
 
         for b in self._boundarys_enabled:
@@ -626,10 +780,10 @@ class Assembly(Serializable):
         return RGC
 
     def _RGC2GC(self, RGC: list[torch.Tensor]):
-        GC = torch.cat([
-            RGC[i][self._RGC_remain_index[i]].flatten() for i in range(len(RGC))
-        ],
-                       dim=0)
+        GC = torch.cat(
+            [RGC[i][self._RGC_remain_index[i]].flatten() for i in range(len(RGC))],
+            dim=0,
+        )
         return GC
 
     def refine_RGC(self, RGC: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -646,9 +800,9 @@ class Assembly(Serializable):
         if name is None:
             name = part.__class__.__name__
             number = len(self._parts)
-            while ('%s-%d' % (name, number)) in self._parts:
+            while ("%s-%d" % (name, number)) in self._parts:
                 number += 1
-            name = '%s-%d' % (name, number)
+            name = "%s-%d" % (name, number)
 
         if name in self._parts:
             raise ValueError(f"Part with name {name} already exists in the assembly.")
@@ -658,7 +812,7 @@ class Assembly(Serializable):
         if name not in self._parts:
             raise ValueError(f"Part with name {name} does not exist in the assembly.")
         return self._parts[name]
-    
+
     def delete_part(self, name: str) -> None:
         if name in self._parts:
             del self._parts[name]
@@ -669,28 +823,34 @@ class Assembly(Serializable):
         if name is None:
             name = instance.__class__.__name__
             number = len(self._instances)
-            while ('%s-%d' % (name, number)) in self._instances:
+            while ("%s-%d" % (name, number)) in self._instances:
                 number += 1
-            name = '%s-%d' % (name, number)
+            name = "%s-%d" % (name, number)
 
         if name in self._instances:
-            raise ValueError(f"Instance with name {name} already exists in the assembly.")
+            raise ValueError(
+                f"Instance with name {name} already exists in the assembly."
+            )
         if instance.part_name in self._parts:
             # Keep the Instance exterior-surface property as a direct
             # forwarding view of its Part as soon as the relationship exists.
             instance.part = self._parts[instance.part_name]
         self._instances[name] = instance
-        
+
     def get_instance(self, name: str) -> Instance:
         if name not in self._instances:
-            raise ValueError(f"Instance with name {name} does not exist in the assembly.")
+            raise ValueError(
+                f"Instance with name {name} does not exist in the assembly."
+            )
         return self._instances[name]
 
     def delete_instance(self, name: str) -> None:
         if name in self._instances:
             del self._instances[name]
         else:
-            raise ValueError(f"Instance with name {name} does not exist in the assembly.")
+            raise ValueError(
+                f"Instance with name {name} does not exist in the assembly."
+            )
 
     def add_reference_point(self, rp: ReferencePoint, name: str = None):
         """
@@ -705,9 +865,9 @@ class Assembly(Serializable):
 
         if name is None:
             number = len(self._reference_points)
-            while ('rp-%d' % number) in self._reference_points:
+            while ("rp-%d" % number) in self._reference_points:
                 number += 1
-            name = 'rp-%d' % number
+            name = "rp-%d" % number
 
         self._reference_points[name] = rp
 
@@ -726,8 +886,7 @@ class Assembly(Serializable):
         if name in self._reference_points:
             return self._reference_points[name]
         else:
-            raise ValueError(
-                f"Reference point '{name}' not found in the model.")
+            raise ValueError(f"Reference point '{name}' not found in the model.")
 
     def delete_reference_point(self, name: str):
         """
@@ -742,8 +901,7 @@ class Assembly(Serializable):
         if name in self._reference_points:
             del self._reference_points[name]
         else:
-            raise ValueError(
-                f"Reference point '{name}' not found in the model.")
+            raise ValueError(f"Reference point '{name}' not found in the model.")
 
     def add_load(self, load: loads.BaseLoad, name: str = None):
         """
@@ -758,13 +916,13 @@ class Assembly(Serializable):
         if name is None:
             name = load.__class__.__name__
             number = len(self._loads)
-            while ('%s-%d' % (name, number)) in self._loads:
+            while ("%s-%d" % (name, number)) in self._loads:
                 number += 1
-            name = '%s-%d' % (name, number)
+            name = "%s-%d" % (name, number)
         self._loads[name] = load
 
         return name
-    
+
     def add_loads(self, loads_dict: dict[str, loads.BaseLoad]):
         """
         Add multiple loads to the FEA model.
@@ -793,7 +951,6 @@ class Assembly(Serializable):
         else:
             raise ValueError(f"Load '{name}' not found in the model.")
 
-
     def delete_load(self, name: str):
         """
         Delete a load from the FEA model.
@@ -818,7 +975,7 @@ class Assembly(Serializable):
         """
         self._loads.clear()
 
-    def get_object(self, name: str, obj_type: str = 'auto'):
+    def get_object(self, name: str, obj_type: str = "auto"):
         """
         Retrieve an object from the assembly by its name.
 
@@ -831,14 +988,14 @@ class Assembly(Serializable):
             object: The requested assembly object.
         """
         containers = {
-            'instance': self._instances,
-            'rp': self._reference_points,
-            'load': self._loads,
-            'constraint': self._constraints,
-            'boundary': self._boundarys,
+            "instance": self._instances,
+            "rp": self._reference_points,
+            "load": self._loads,
+            "constraint": self._constraints,
+            "boundary": self._boundarys,
         }
 
-        if obj_type == 'auto':
+        if obj_type == "auto":
             found = []
             for kind, data in containers.items():
                 if name in data:
@@ -855,7 +1012,9 @@ class Assembly(Serializable):
             return found[0][1]
 
         if obj_type not in containers:
-            raise ValueError("obj_type must be one of {'auto', 'instance', 'rp', 'load', 'constraint', 'boundary'}")
+            raise ValueError(
+                "obj_type must be one of {'auto', 'instance', 'rp', 'load', 'constraint', 'boundary'}"
+            )
 
         if name not in containers[obj_type]:
             raise ValueError(f"{obj_type} '{name}' not found in the model.")
@@ -884,7 +1043,7 @@ class Assembly(Serializable):
             workcondition.boundary_enabled[name] = b.enabled
 
         return workcondition
-    
+
     def set_work_conditions(self, workcondition: WorkCondition):
         """
         Set parameters for loads in the FEA model.
@@ -900,38 +1059,45 @@ class Assembly(Serializable):
             if name in self._loads:
                 self._loads[name]._parameters = info
             else:
-                print(f"Warning: Load '{name}' not found in the model. Skipping parameter update.")
-            
+                print(
+                    f"Warning: Load '{name}' not found in the model. Skipping parameter update."
+                )
+
         for name, enabled in workcondition.ins_enabled.items():
             if name in self._instances:
                 self._instances[name].enabled = enabled
             else:
-                print(f"Warning: Instance '{name}' not found in the model. Skipping parameter update.")
+                print(
+                    f"Warning: Instance '{name}' not found in the model. Skipping parameter update."
+                )
 
         for name, enabled in workcondition.load_enabled.items():
             if name in self._loads:
                 self._loads[name].enabled = enabled
             else:
-                print(f"Warning: Load '{name}' not found in the model. Skipping parameter update.")
+                print(
+                    f"Warning: Load '{name}' not found in the model. Skipping parameter update."
+                )
 
         for name, enabled in workcondition.constraint_enabled.items():
             if name in self._constraints:
                 self._constraints[name].enabled = enabled
             else:
-                print(f"Warning: Constraint '{name}' not found in the model. Skipping parameter update.")
+                print(
+                    f"Warning: Constraint '{name}' not found in the model. Skipping parameter update."
+                )
 
         for name, enabled in workcondition.boundary_enabled.items():
             if name in self._boundarys:
                 self._boundarys[name].enabled = enabled
             else:
-                print(f"Warning: Boundary '{name}' not found in the model. Skipping parameter update.")
+                print(
+                    f"Warning: Boundary '{name}' not found in the model. Skipping parameter update."
+                )
 
         self.define_required_DoFs()
 
-
-    def add_constraint(self,
-                       constraint: constraints.BaseConstraint,
-                       name: str = None):
+    def add_constraint(self, constraint: constraints.BaseConstraint, name: str = None):
         """
         Add a constraint to the FEA model.
 
@@ -944,9 +1110,9 @@ class Assembly(Serializable):
         if name is None:
             number = len(self._constraints)
             name = constraint.__class__.__name__
-            while ('%s-%d' % (name, number)) in self._constraints:
+            while ("%s-%d" % (name, number)) in self._constraints:
                 number += 1
-            name = '%s-%d' % (name, number)
+            name = "%s-%d" % (name, number)
         self._constraints[name] = constraint
         return name
 

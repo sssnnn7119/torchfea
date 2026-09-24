@@ -1,6 +1,7 @@
-import numpy as np
 import torch
+
 from ..obj_base import BaseObj
+
 
 class BaseConstraint(BaseObj):
     """
@@ -16,17 +17,47 @@ class BaseConstraint(BaseObj):
     def initialize(self, assembly):
         super().initialize(assembly)
 
+    def get_input_blocks(self) -> set[int]:
+        """Return RGC blocks read by this kinematic constraint.
 
-    def modify_R_K(self, RGC: list[torch.Tensor], R0: torch.Tensor,
-                   K_indices: torch.Tensor = None, K_values: torch.Tensor = None, if_onlyforce: bool = False, *args, **kwargs):
+        A block is identified by its redundant-coordinate block index.  The
+        returned information is used by :class:`Assembly` to construct a
+        dependency graph.  Constraints that do not transform coordinates can
+        keep the default empty set.
+        """
+        return set()
 
-        R = torch.sparse_coo_tensor(indices=[[]],
-                                    values=[],
-                                    size=[self._assembly._RGC_list_indexStart[-1]])
+    def get_output_blocks(self) -> set[int]:
+        """Return RGC blocks written by this kinematic constraint.
+
+        Coordinate reconstruction is performed from input blocks to output
+        blocks.  The default is empty for constraints that do not eliminate
+        or reconstruct coordinates.
+        """
+        return set()
+
+    def modify_R_K(
+        self,
+        RGC: list[torch.Tensor],
+        R0: torch.Tensor,
+        K_indices: torch.Tensor = None,
+        K_values: torch.Tensor = None,
+        if_onlyforce: bool = False,
+        *args,
+        **kwargs,
+    ):
+
+        R = torch.sparse_coo_tensor(
+            indices=[[]], values=[], size=[self._assembly._RGC_list_indexStart[-1]]
+        )
         if if_onlyforce:
             return R
         return R, torch.zeros([2, 0], dtype=torch.int64), torch.zeros([0])
 
-
-    def modify_mass_matrix(self, mass_indices: torch.Tensor, mass_values: torch.Tensor, RGC: list[torch.Tensor]):
+    def modify_mass_matrix(
+        self,
+        mass_indices: torch.Tensor,
+        mass_values: torch.Tensor,
+        RGC: list[torch.Tensor],
+    ):
         return torch.zeros([2, 0], dtype=torch.int64), torch.zeros([0])
