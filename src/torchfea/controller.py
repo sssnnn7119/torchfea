@@ -5,7 +5,7 @@ from .model import Assembly
 from .cad import CADModel
 from .solver import BaseSolver
 from .interfaces import Serializable
-from .model_hash import controller_model_hash
+from .model_hash import controller_model_hash, controller_result_compatibility_hash
 
 class FEAController(Serializable):
 
@@ -59,6 +59,7 @@ class FEAController(Serializable):
         # The result must remain paired with the persistent model definition,
         # not with those transient arrays.
         model_hash = self.get_model_hash()
+        result_compatibility_hash = self.get_result_compatibility_hash()
         if if_initialize:
             self.initialize()
         else:
@@ -66,6 +67,7 @@ class FEAController(Serializable):
 
         result = self.solver.solve(GC0=GC0, *args, **kwargs)
         result.model_hash = model_hash
+        result.compatibility_hash = result_compatibility_hash
         return result
 
     def get_model_hash(self) -> str:
@@ -77,6 +79,10 @@ class FEAController(Serializable):
         """
         self._model_hash = controller_model_hash(self)
         return self._model_hash
+
+    def get_result_compatibility_hash(self) -> str:
+        """Compute an identity for viewing results across load value changes."""
+        return controller_result_compatibility_hash(self)
 
     @property
     def model_hash(self) -> str:

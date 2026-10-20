@@ -1809,8 +1809,15 @@ class PostprocessPanel(QWidget):
             raise RuntimeError("No solved result is available for export.")
         current_hash = self.controller.get_model_hash()
         if self.result.model_hash != current_hash:
-            raise RuntimeError("The model changed after this result was computed; solve it again.")
-        self.result.model_hash = current_hash
+            current_compatibility_hash = (
+                self.controller.get_result_compatibility_hash())
+            if self.result.compatibility_hash != current_compatibility_hash:
+                raise RuntimeError("The model changed after this result was computed; solve it again.")
+        else:
+            self.result.model_hash = current_hash
+            if not self.result.compatibility_hash:
+                self.result.compatibility_hash = (
+                    self.controller.get_result_compatibility_hash())
         output = Path(path)
         suffix = output.suffix.casefold()
         if suffix not in {".npz", ".csv"}:

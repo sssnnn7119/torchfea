@@ -23,7 +23,8 @@ class StaticResult(BaseResult):
     def __init__(self, GC: torch.Tensor, work_conditions: WorkCondition,
                  jacobian: dict[str, torch.Tensor] = None, total_time: float = 0.0,
                  time_items: dict[str, list[float]] = None, converged: bool = True,
-                 model_hash: str | None = None):
+                 model_hash: str | None = None,
+                 compatibility_hash: str | None = None):
         super().__init__()
         self.GC = GC.detach().clone()
         """ 
@@ -35,6 +36,9 @@ class StaticResult(BaseResult):
 
         self.model_hash: str | None = model_hash
         """Identity of the model used to produce this result."""
+
+        self.compatibility_hash: str | None = compatibility_hash
+        """Identity for viewing this result after load values change."""
 
         if jacobian is None:
             jacobian = {}
@@ -125,8 +129,7 @@ class StaticResult(BaseResult):
         serialized_work_conditions = np.empty((), dtype=object)
         serialized_work_conditions[()] = self.work_conditions._serialize()
 
-        np.savez_compressed(
-            file=path,
+        archive = dict(
             GC=self.GC.cpu().numpy(),
             work_conditions=serialized_work_conditions,
             total_time=self.total_time,
@@ -134,6 +137,9 @@ class StaticResult(BaseResult):
             converged=self.converged,
             model_hash=self.model_hash,
         )
+        if self.compatibility_hash:
+            archive["compatibility_hash"] = self.compatibility_hash
+        np.savez_compressed(file=path, **archive)
     
     @classmethod
     def load(cls, path: str) -> "StaticResult":
@@ -149,6 +155,10 @@ class StaticResult(BaseResult):
             time_items = data['time_items'].item()
             converged = bool(np.asarray(data['converged']).reshape(-1)[0])
             model_hash = str(np.asarray(data['model_hash']).reshape(-1)[0])
+            compatibility_hash = (
+                str(np.asarray(data['compatibility_hash']).reshape(-1)[0])
+                if 'compatibility_hash' in data.files else None
+            )
             serialized_work_conditions = data['work_conditions'].item()
 
         work_conditions = (
@@ -157,4 +167,5 @@ class StaticResult(BaseResult):
         )
 
         return cls(GC=GC, work_conditions=work_conditions, total_time=total_time,
-                   time_items=time_items, converged=converged, model_hash=model_hash)
+                   time_items=time_items, converged=converged, model_hash=model_hash,
+                   compatibility_hash=compatibility_hash)

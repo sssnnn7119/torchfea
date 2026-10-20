@@ -13,7 +13,9 @@ from ..interfaces import Serializable
 
 class BaseObj(Serializable):
     _serialized_attributes_exclude = [
-        "_assembly", "_RGC_index", "_index_start",
+        "_assembly",
+        "_RGC_index",
+        "_index_start",
     ]
 
     def __init__(self) -> None:

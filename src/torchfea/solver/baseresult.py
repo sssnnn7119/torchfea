@@ -18,6 +18,9 @@ class BaseResult():
         self.model_hash: str | None = None
         """Identity of the model used to produce this result."""
 
+        self.compatibility_hash: str | None = None
+        """Identity for viewing this result after load values change."""
+
         self.GC: torch.Tensor = None
         """The generalized coordinates of the solution."""
 

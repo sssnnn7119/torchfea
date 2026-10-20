@@ -99,7 +99,8 @@ def _surface_collection(value):
     return tuple(sorted(faces, key=sort_key))
 
 
-def _canonical_mapping(value: Mapping, key: str | None = None):
+def _canonical_mapping(value: Mapping, key: str | None = None,
+                      ignore_load_parameters: bool = False):
     """Canonicalize serialized dictionaries, including set-like mappings."""
     result = {}
     for item_key, item_value in value.items():
@@ -118,6 +119,7 @@ def _canonical_mapping(value: Mapping, key: str | None = None):
             result[item_key] = _canonical_serialized(
                 item_value,
                 unordered=key in _UNORDERED_MAPPING_KEYS,
+                ignore_load_parameters=ignore_load_parameters,
             )
     return result
 
@@ -169,7 +171,8 @@ def stable_hash(value) -> str:
 
 
 def _canonical_serialized(value, *, key: str | None = None,
-                          unordered: bool = False):
+                          unordered: bool = False,
+                          ignore_load_parameters: bool = False):
     """Normalize a ``Serializable._serialize`` tree for identity hashing.
 
     Follow the same rules as ``Serializable``: an explicit
@@ -191,9 +194,13 @@ def _canonical_serialized(value, *, key: str | None = None,
                 },
             )
         if tag == "dict" and isinstance(value[0], dict):
-            return _canonical_mapping(value[0], key=key)
+            return _canonical_mapping(
+                value[0], key=key,
+                ignore_load_parameters=ignore_load_parameters)
         if tag in {"list", "tuple"} and isinstance(value[0], (list, tuple)):
-            return tuple(_canonical_serialized(item, key=key, unordered=unordered)
+            return tuple(_canonical_serialized(
+                item, key=key, unordered=unordered,
+                ignore_load_parameters=ignore_load_parameters)
                          for item in value[0])
 
     if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], dict):
@@ -224,6 +231,16 @@ def _canonical_serialized(value, *, key: str | None = None,
                 # Lamé parameters are derived from E and nu and can differ by
                 # a float32 round-trip even when the material is identical.
                 if "LinearElastic" in class_name and item_key in {"lambda_", "mu"}:
+                    continue
+                # Result compatibility keeps the load target/type in the
+                # identity while allowing its numerical parameters to vary.
+                is_load_class = any(
+                    base.__name__ == "BaseLoad"
+                    and base.__module__.endswith(".model.loads.base")
+                    for base in klass.__mro__
+                )
+                if (ignore_load_parameters and is_load_class
+                        and item_key == "_parameters"):
                     continue
                 if "FEAController" in class_name and item_key == "cad":
                     cad_parts = _tagged_payload(item, "dict")
@@ -261,15 +278,21 @@ def _canonical_serialized(value, *, key: str | None = None,
                     item,
                     key=item_key,
                     unordered=item_key in _UNORDERED_MAPPING_KEYS,
+                    ignore_load_parameters=ignore_load_parameters,
                 )
             return payload, class_name
     if isinstance(value, dict):
-        return _canonical_mapping(value, key=key)
+        return _canonical_mapping(
+            value, key=key, ignore_load_parameters=ignore_load_parameters)
     if isinstance(value, list):
-        return tuple(_canonical_serialized(item, key=key, unordered=unordered)
+        return tuple(_canonical_serialized(
+            item, key=key, unordered=unordered,
+            ignore_load_parameters=ignore_load_parameters)
                      for item in value)
     if isinstance(value, tuple):
-        return tuple(_canonical_serialized(item, key=key, unordered=unordered)
+        return tuple(_canonical_serialized(
+            item, key=key, unordered=unordered,
+            ignore_load_parameters=ignore_load_parameters)
                      for item in value)
     if isinstance(value, np.ndarray):
         return _canonical_array(
@@ -293,4 +316,16 @@ def controller_model_hash(controller) -> str:
     visible on the next explicit hash check.
     """
     serialized_model = _canonical_serialized(controller._serialize())
+    return stable_hash(serialized_model)
+
+
+def controller_result_compatibility_hash(controller) -> str:
+    """Return an identity for result viewing that ignores load magnitudes.
+
+    Geometry, mesh, load types/targets, constraints, and all other model
+    definitions remain part of the identity. Only each load's ``_parameters``
+    field is omitted, so results can be inspected with updated load values.
+    """
+    serialized_model = _canonical_serialized(
+        controller._serialize(), ignore_load_parameters=True)
     return stable_hash(serialized_model)

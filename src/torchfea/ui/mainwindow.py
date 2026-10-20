@@ -286,20 +286,31 @@ class MainWindow(QMainWindow):
             # and validate the new native model instead.
             controller = None
             expected_hash = None
+            result_compatibility_hash = getattr(result, "compatibility_hash", None)
             if (self._loaded_controller is not None
                     and self._loaded_revision == self.workbench._definition_revision
                     and not self.workbench._editor_dirty):
                 loaded_hash = self._loaded_model_hash
                 if loaded_hash is None:
                     raise RuntimeError("Loaded model identity is unavailable.")
-                if result_hash == loaded_hash:
+                loaded_compatibility_hash = (
+                    self._loaded_controller.get_result_compatibility_hash())
+                if (result_hash == loaded_hash
+                        or (result_compatibility_hash
+                            and result_compatibility_hash == loaded_compatibility_hash)):
                     controller = self._loaded_controller
                     expected_hash = loaded_hash
 
             if controller is None:
                 controller = build_controller(self.project)
                 expected_hash = controller.get_model_hash()
-                if result_hash != expected_hash:
+                expected_compatibility_hash = (
+                    controller.get_result_compatibility_hash())
+                compatible = (
+                    result_compatibility_hash
+                    and result_compatibility_hash == expected_compatibility_hash
+                )
+                if result_hash != expected_hash and not compatible:
                     raise ValueError(
                         "结果与当前模型不匹配：\n"
                         f"当前模型：{expected_hash}\n结果文件：{result_hash}")
@@ -310,6 +321,12 @@ class MainWindow(QMainWindow):
                 controller.GC2RGC(result.GC)
             except Exception as exc:
                 raise ValueError("结果自由度与当前模型不一致，无法显示。") from exc
+            if not result_compatibility_hash:
+                # Legacy result archives have only the strict hash. They are
+                # accepted only on an exact match, so it is safe to add the
+                # current compatibility identity for future exports.
+                result.compatibility_hash = (
+                    controller.get_result_compatibility_hash())
             self.postprocess._solved(controller, result, None)
             self._show_page(
                 self.postprocess,
