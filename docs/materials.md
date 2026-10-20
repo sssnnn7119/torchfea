@@ -254,7 +254,7 @@ $$
 \texttt{mu}=\frac{\mu_0}{2S_N}.
 $$
 
-这也是 `tests/material_test/test_linear_elastic.py` 中的参数换算方式。
+这也是 `examples/material_test/test_linear_elastic.py` 中的参数换算方式。
 
 ### 2.7 `Ogden`
 
@@ -375,6 +375,6 @@ element.set_materials(
 
 相关示例：
 
-- `tests/material_test/test_hyperelastic.py`：逐模型能量、应力和解析切线检查。
-- `tests/material_test/test_linear_elastic.py`：C3D4 压力模型下的小应变等价和有限变形对比。
+- `examples/material_test/test_hyperelastic.py`：逐模型能量、应力和解析切线检查。
+- `examples/material_test/test_linear_elastic.py`：C3D4 压力模型下的小应变等价和有限变形对比。
 - [有限元使用说明](usage.md)：完整的建模、载荷、边界和求解流程。

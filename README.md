@@ -75,7 +75,7 @@ import torchfea
 torch.set_default_dtype(torch.float64)
 
 inp = torchfea.FEA_INP()
-inp.read_inp(Path("tests/models/C3D4.inp"))
+inp.read_inp(Path("examples/models/C3D4.inp"))
 
 fe = torchfea.from_inp(inp)
 fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-8)
@@ -194,7 +194,7 @@ src/torchfea/
 └── ui/                 # PySide6 + VTK CAE interface
 
 docs/                   # usage, architecture, solver, loads, and CAE guides
-tests/                  # element, pressure, contact, dynamics, and sensitivity cases
+examples/              # element, pressure, contact, dynamics, and sensitivity cases
 ```
 
 Useful references:

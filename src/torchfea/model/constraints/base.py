@@ -1,5 +1,5 @@
-import numpy as np
 import torch
+
 from ..obj_base import BaseObj
 
 
@@ -16,6 +16,25 @@ class BaseConstraint(BaseObj):
 
     def initialize(self, assembly):
         super().initialize(assembly)
+
+    def get_input_blocks(self) -> set[int]:
+        """Return RGC blocks read by this kinematic constraint.
+
+        A block is identified by its redundant-coordinate block index.  The
+        returned information is used by :class:`Assembly` to construct a
+        dependency graph.  Constraints that do not transform coordinates can
+        keep the default empty set.
+        """
+        return set()
+
+    def get_output_blocks(self) -> set[int]:
+        """Return RGC blocks written by this kinematic constraint.
+
+        Coordinate reconstruction is performed from input blocks to output
+        blocks.  The default is empty for constraints that do not eliminate
+        or reconstruct coordinates.
+        """
+        return set()
 
     def modify_R_K(
         self,

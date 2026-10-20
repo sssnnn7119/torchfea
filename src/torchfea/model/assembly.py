@@ -1,11 +1,10 @@
 import numpy as np
-import torch
-from . import Instance
-from . import ReferencePoint
-from . import loads, constraints, boundarys
-from .part import _Surfaces, Part
 import pyvista as pv
+import torch
+
 from ..interfaces import Serializable
+from . import Instance, ReferencePoint, boundarys, constraints, loads
+from .part import Part, _Surfaces
 
 
 class WorkCondition(Serializable):
@@ -55,8 +54,12 @@ class Assembly(Serializable):
         """List to keep track of enabled instances for analysis."""
         self._loads_enabled: list[loads.BaseLoad] = []
         """List to keep track of enabled loads for analysis."""
-        self._constraints_enabled: list[constraints.BaseConstraint] = []
-        """List to keep track of enabled constraints for analysis."""
+        self._constraints_forward: list[constraints.BaseConstraint] = []
+        """Enabled kinematic constraints in coordinate-reconstruction order."""
+
+        self._constraints_backward: list[constraints.BaseConstraint] = []
+        """Enabled kinematic constraints in residual-reduction order."""
+
         self._boundarys_enabled: list[boundarys.BaseBoundary] = []
         """List to keep track of enabled boundary conditions for analysis."""
 
@@ -147,9 +150,7 @@ class Assembly(Serializable):
             picker="point",
         )
 
-    def show_ins(
-        self, ins_name: str, GC: torch.Tensor = None, surf_name: str | None = None
-    ):
+    def show_ins(self, ins_name: str, GC: torch.Tensor = None, surf_name: str = None):
         """
         Visualize the specified instance.
 
@@ -292,11 +293,13 @@ class Assembly(Serializable):
                     assembly._loads_enabled.append(f)
                     f.enabled = True  # Set default to True if enabled is None
 
-            assembly._constraints_enabled = []
+            # Constraints are represented by the derived forward/backward
+            # execution plans rather than a third enabled list.  Normalize
+            # the default state here so the plan builder preserves the
+            # historical ``enabled=None -> True`` behavior.
             for c in assembly._constraints.values():
-                if c.enabled or (c.enabled is None):
-                    assembly._constraints_enabled.append(c)
-                    c.enabled = True  # Set default to True if enabled is None
+                if c.enabled is None:
+                    c.enabled = True
 
             assembly._boundarys_enabled = []
             for b in assembly._boundarys.values():
@@ -324,20 +327,94 @@ class Assembly(Serializable):
         """
 
         self._Initializer.initialize(self)
-
+        # define_required_DoFs refreshes enabled objects, builds the
+        # dependency plan, and creates the reduced-coordinate maps.
         self.define_required_DoFs()
 
+    def _build_constraint_execution_plan(self):
+        """Build deterministic forward and reverse constraint plans.
+
+        ``_constraints`` remains the persistent name-to-object registry.  The
+        derived lists below are runtime data.  A constraint whose output RGC
+        block is consumed by another constraint must execute first during
+        coordinate reconstruction.  Residual and tangent reduction use the
+        reverse order.
+        """
+        enabled = {
+            name: constraint
+            for name, constraint in self._constraints.items()
+            if constraint.enabled
+        }
+
+        names = list(enabled.keys())
+        graph = {name: set() for name in names}
+        indegree = {name: 0 for name in names}
+
+        inputs = {
+            name: set(constraint.get_input_blocks())
+            for name, constraint in enabled.items()
+        }
+        outputs = {
+            name: set(constraint.get_output_blocks())
+            for name, constraint in enabled.items()
+        }
+
+        for name_a in names:
+            for name_b in names:
+                if name_a == name_b:
+                    continue
+
+                # A writes a block consumed by B: A -> B.
+                if outputs[name_a] & inputs[name_b]:
+                    if name_b not in graph[name_a]:
+                        graph[name_a].add(name_b)
+                        indegree[name_b] += 1
+
+        # Kahn's algorithm.  Sorting the ready queue preserves the assembly's
+        # deterministic dictionary order whenever multiple branches are
+        # independent.
+        ready = sorted(name for name in names if indegree[name] == 0)
+        order = []
+
+        while ready:
+            name = ready.pop(0)
+            order.append(name)
+
+            for target in sorted(graph[name]):
+                indegree[target] -= 1
+                if indegree[target] == 0:
+                    ready.append(target)
+            ready.sort()
+
+        if len(order) != len(names):
+            cyclic = [name for name in names if indegree[name] > 0]
+            raise ValueError(
+                "Kinematic constraint dependency cycle detected among: "
+                + ", ".join(cyclic)
+            )
+
+        self._constraints_forward = [enabled[name] for name in order]
+        self._constraints_backward = list(reversed(self._constraints_forward))
+
     def define_required_DoFs(self):
+        # Rebuild the enabled lists as this method is also used after a work
+        # condition changes object enablement.
+        self._Initializer._initialize_enabled_objects(self)
+        self._build_constraint_execution_plan()
+
+        # This method may be called repeatedly.  Start from a clean mask so a
+        # previously enabled constraint cannot leave stale active DoFs behind.
+        self._RGC_remain_index = [np.zeros(size, dtype=bool) for size in self._RGC_size]
+
         for ins in self._instances_enabled:
             self._RGC_remain_index = ins.set_required_DoFs(self._RGC_remain_index)
 
         for f in self._loads_enabled:
             self._RGC_remain_index = f.set_required_DoFs(self._RGC_remain_index)
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_backward:
             self._RGC_remain_index = c.set_required_DoFs(self._RGC_remain_index)
 
-        # Finally, apply boundary conditions to deactivate Dirichlet DOFs
         for b in self._boundarys_enabled:
             self._RGC_remain_index = b.set_required_DoFs(self._RGC_remain_index)
 
@@ -369,7 +446,7 @@ class Assembly(Serializable):
         for l in self._loads_enabled:
             l.initialize_dynamic()
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             c.initialize_dynamic()
 
         # assemble the redundant mass matrix
@@ -398,7 +475,7 @@ class Assembly(Serializable):
         for l in self._loads_enabled:
             l.reinitialize(RGC)
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             c.reinitialize(RGC)
 
     # endregion
@@ -446,8 +523,11 @@ class Assembly(Serializable):
         R0.scatter_add_(0, R_indices.to(torch.int64), R_values)
         R = R0
         # region consider the constraints
-        for c in self._constraints_enabled:
-            R_new = c.modify_R_K(RGC, R0, if_onlyforce=True)
+        # Reduce coordinate transformations from leaves back to masters.  The
+        # accumulated residual is passed on so a downstream constraint can
+        # consume force already transferred by an upstream reduction.
+        for c in self._constraints_backward:
+            R_new = c.modify_R_K(RGC, R, if_onlyforce=True)
             R = R + R_new
         # endregion
 
@@ -458,9 +538,7 @@ class Assembly(Serializable):
         return R
 
     def assemble_Stiffness_Matrix(
-        self,
-        RGC: list[torch.Tensor] | None = None,
-        GC: torch.Tensor | None = None,
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
     ):
         """
         Assemble the stiffness matrix.
@@ -548,8 +626,11 @@ class Assembly(Serializable):
 
         R = R0
         # region consider the constraints
-        for c in self._constraints_enabled:
-            R_new, Kc_indices, Kc_values = c.modify_R_K(RGC, R0, K_indices, K_values)
+        # Residual/tangent reduction follows the reverse dependency order.
+        # K_indices/K_values already contain contributions added by previous
+        # constraints in this loop.
+        for c in self._constraints_backward:
+            R_new, Kc_indices, Kc_values = c.modify_R_K(RGC, R, K_indices, K_values)
             K_indices = torch.cat([K_indices, Kc_indices], dim=1)
             K_values = torch.cat([K_values, Kc_values])
             R = R + R_new
@@ -572,7 +653,7 @@ class Assembly(Serializable):
         return R, K_indices, K_values
 
     def _total_Potential_Energy(
-        self, RGC: list[torch.Tensor] | None = None, GC: torch.Tensor | None = None
+        self, RGC: list[torch.Tensor] = None, GC: torch.Tensor = None
     ) -> float:
         """
         Calculate the total potential energy of the finite element model.
@@ -608,14 +689,30 @@ class Assembly(Serializable):
         mass_indices = [self._mass_matrix_indices]
         mass_values = [self._mass_matrix_values]
         RGC = self._GC2RGC(GC_now)
-        for c in self._constraints_enabled:
-            indices_now, values_now = c.modify_mass_matrix(
-                mass_indices=self._mass_matrix_indices,
-                mass_values=self._mass_matrix_values,
+
+        current_indices = self._mass_matrix_indices
+        current_values = self._mass_matrix_values
+
+        # Mass transformations use the same reverse dependency direction as
+        # stiffness reduction and consume the accumulated matrix.
+        for c in self._constraints_backward:
+            transformed = c.modify_mass_matrix(
+                mass_indices=current_indices,
+                mass_values=current_values,
                 RGC=RGC,
             )
+            if transformed is None:
+                raise RuntimeError(
+                    f"Constraint '{c.__class__.__name__}' returned None "
+                    "from modify_mass_matrix()."
+                )
+
+            indices_now, values_now = transformed
             mass_indices.append(indices_now)
             mass_values.append(values_now)
+
+            current_indices = torch.cat(mass_indices, dim=1)
+            current_values = torch.cat(mass_values, dim=0)
 
         mass_indices = torch.cat(mass_indices, dim=1)
         mass_values = torch.cat(mass_values, dim=0)
@@ -674,7 +771,7 @@ class Assembly(Serializable):
                 self._GC_list_indexStart[i] : self._GC_list_indexStart[i + 1]
             ]
 
-        for c in self._constraints_enabled:
+        for c in self._constraints_forward:
             RGC = c.modify_RGC(RGC)
 
         for b in self._boundarys_enabled:

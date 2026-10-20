@@ -15,9 +15,10 @@ torchfea/
 ├── docs/                       # 文档
 │   ├── structure.md            # 架构说明（本文档）
 │   ├── usage.md                # 使用说明
+│   ├── constraints.md          # 约束算法与自由度消元
 │   ├── materials.md            # 材料模型与本构公式
 │   └── elements/               # 单元与积分文档
-├── tests/                      # 可运行测试与示例
+├── examples/                  # 可运行测试与示例
 │   ├── cad_test/               # CAD/网格历史
 │   ├── enableobj_test/         # 对象启停
 │   ├── contact_test/           # 接触分析
@@ -125,8 +126,10 @@ torchfea/
   - `boundary_condition_rp.py`: 参考点边界条件
   - **作用**: 仅负责删去（屏蔽）自由度，不执行自由度融合。
 - **Constraints**: `src/torchfea/model/constraints/`
+  - `base.py`: 约束接口与残差/切线映射入口
   - `couple.py`: 耦合约束
-  - **作用**: 负责自由度融合（将多个自由度合并/消元），并将对应刚度贡献融合到保留自由度。
+  - `joint.py`: 参考点之间的运动学关节
+  - **作用**: 负责自由度融合（将多个自由度合并/消元），并将对应残差、刚度和质量贡献融合到保留自由度。具体算法见 [constraints.md](constraints.md)。
 
 ### 3. 求解器层 (Solver Layer)
 
@@ -310,7 +313,7 @@ controller.solve()
 
 - 支持自接触和多体接触
 - 接触力的自动计算
-- 测试样例见 `tests/contact_test/`、`tests/pressure_test/` 与 `tests/gradient_test/`。
+- 测试样例见 `examples/contact_test/`、`examples/pressure_test/` 与 `examples/gradient_test/`。
 
 ### 4. 表面处理
 
@@ -357,12 +360,12 @@ controller.solve()
 
 ## 测试与示例
 
-- `tests/element_test/`：单元与表面几何、法向、编号一致性等测试
-- `tests/kinetic_test/`：显式/隐式动力学时间积分与能量检查
-- `tests/contact_test/`：接触算例与基准对比
-- `tests/material_test/`：材料能量、应力、切线和小应变等价检查
-- `tests/pressure_test/`：表面压力加载验证
-- `tests/gradient_test/`：梯度与优化流程
+- `examples/element_test/`：单元与表面几何、法向、编号一致性等测试
+- `examples/kinetic_test/`：显式/隐式动力学时间积分与能量检查
+- `examples/contact_test/`：接触算例与基准对比
+- `examples/material_test/`：材料能量、应力、切线和小应变等价检查
+- `examples/pressure_test/`：表面压力加载验证
+- `examples/gradient_test/`：梯度与优化流程
 
 ---
 
