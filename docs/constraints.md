@@ -2,6 +2,8 @@
 
 本文说明 `src/torchfea/model/constraints/` 中运动学约束的坐标组织、约束消元以及残差和切线矩阵映射方法。
 
+固定插值表面绑定 `LinearTie` / `NodeToSurfaceTie` 的使用、稀疏映射和解析导数见 [线性表面绑定](tie.md)。
+
 当前约束模块包含：
 
 - `BaseConstraint`：约束接口，不直接改变坐标。
@@ -37,7 +39,7 @@ GC → RGC
 屏蔽边界条件，得到约化 R、K
 ```
 
-多个运动学约束之间通过 `get_input_blocks()` 和 `get_output_blocks()` 建立依赖图。坐标重构采用正向拓扑顺序；残差、切线和质量矩阵消元采用反向顺序。
+多个运动学约束之间通过 `get_input_dofs()` 和 `get_output_dofs()` 返回的全局 RGC 自由度数组建立依赖图。接口统一返回一维 `NDArray[np.int64]`，允许未排序和重复索引；装配通过 NumPy 排序和二分查找批量匹配依赖。坐标重构采用正向拓扑顺序；残差、切线和质量矩阵消元采用反向顺序。
 
 ## 2. Couple：参考点到节点集的刚体耦合
 
@@ -327,11 +329,11 @@ assembly.add_constraint(
 
 ```python
 class MyConstraint(BaseConstraint):
-    def get_input_blocks(self) -> set[int]:
-        """Return blocks read during coordinate reconstruction."""
+    def get_input_dofs(self) -> NDArray[np.int64]:
+        """Return global RGC DoFs read during coordinate reconstruction."""
 
-    def get_output_blocks(self) -> set[int]:
-        """Return blocks reconstructed by this constraint."""
+    def get_output_dofs(self) -> NDArray[np.int64]:
+        """Return global RGC DoFs reconstructed by this constraint."""
 
     def modify_RGC(self, RGC):
         """Reconstruct dependent RGC blocks."""
@@ -345,6 +347,6 @@ class MyConstraint(BaseConstraint):
 
 1. `modify_RGC()` 按正向依赖顺序执行后，所有从属坐标都可被后续单元和载荷读取；
 2. `modify_R_K()` 按反向依赖顺序执行，将从属坐标贡献传回独立坐标；
-3. `get_input_blocks()` 和 `get_output_blocks()` 必须准确描述坐标块依赖，否则可能得到错误的约束执行顺序；
+3. `get_input_dofs()` 和 `get_output_dofs()` 必须准确描述自由度依赖，否则可能得到错误的约束执行顺序；不重构坐标的约束沿用基类返回的空数组；
 4. 需要二阶一致切线时，必须包含运动学映射的 Hessian 或等价几何刚度项；
 5. 所有索引映射应使用 Assembly 分配的全局 RGC 起始位置，不能假设对象注册顺序固定。

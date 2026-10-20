@@ -197,6 +197,42 @@ class BaseSurface():
         return result
 
 
+    def evaluate_shape_functions(
+        self, local_coordinates: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Evaluate N, dN and d2N at arbitrary local coordinates analytically.
+
+        The returned shapes are ``[..., n]``, ``[..., 2, n]`` and
+        ``[..., 2, 2, n]``. Polynomial coefficients are differentiated by
+        hand through ``_shape_function_derivative``; no autograd is used.
+        """
+        if local_coordinates.shape[-1] != 2:
+            raise ValueError("Surface local coordinates must have two components.")
+        # Use the same polynomial basis as Gaussian-point evaluation so
+        # arbitrary projections preserve the original FE interpolation.
+        g, h = local_coordinates.unbind(-1)
+        basis = torch.stack([
+            torch.ones_like(g), g, h, g * h,
+            g * g, h * h, g * g * h, g * h * h,
+        ], dim=-1)
+        coefficients = self.shape_function[0].to(local_coordinates)
+        basis = basis[..., :coefficients.shape[-1]]
+        # Differentiate coefficients, then evaluate each derivative on the
+        # common basis; this provides exact first and second derivatives.
+        first = torch.stack([
+            self._shape_function_derivative(coefficients, i) for i in range(2)
+        ])
+        second = torch.stack([
+            torch.stack([
+                self._shape_function_derivative(first[i], j) for j in range(2)
+            ]) for i in range(2)
+        ])
+        return (
+            torch.einsum("am,...m->...a", coefficients, basis),
+            torch.einsum("iam,...m->...ia", first, basis),
+            torch.einsum("ijam,...m->...ija", second, basis),
+        )
+
     def gaussian_points_position(self, nodes: torch.Tensor) -> torch.Tensor:
         """
         Get the positions of the Gaussian points on the surface.

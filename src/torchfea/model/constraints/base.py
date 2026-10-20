@@ -1,4 +1,6 @@
+import numpy as np
 import torch
+from numpy.typing import NDArray
 
 from ..obj_base import BaseObj
 
@@ -17,24 +19,13 @@ class BaseConstraint(BaseObj):
     def initialize(self, assembly):
         super().initialize(assembly)
 
-    def get_input_blocks(self) -> set[int]:
-        """Return RGC blocks read by this kinematic constraint.
+    def get_input_dofs(self) -> NDArray[np.int64]:
+        """Return a flat array of global RGC DoFs read; repeats are allowed."""
+        return np.empty(0, dtype=np.int64)
 
-        A block is identified by its redundant-coordinate block index.  The
-        returned information is used by :class:`Assembly` to construct a
-        dependency graph.  Constraints that do not transform coordinates can
-        keep the default empty set.
-        """
-        return set()
-
-    def get_output_blocks(self) -> set[int]:
-        """Return RGC blocks written by this kinematic constraint.
-
-        Coordinate reconstruction is performed from input blocks to output
-        blocks.  The default is empty for constraints that do not eliminate
-        or reconstruct coordinates.
-        """
-        return set()
+    def get_output_dofs(self) -> NDArray[np.int64]:
+        """Return a flat array of reconstructed global RGC DoFs; repeats are allowed."""
+        return np.empty(0, dtype=np.int64)
 
     def modify_R_K(
         self,

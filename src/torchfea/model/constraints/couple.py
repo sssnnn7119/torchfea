@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from numpy.typing import NDArray
 
 from .base import BaseConstraint
 
@@ -38,20 +39,15 @@ class Couple(BaseConstraint):
             index_global - self._assembly.get_reference_point(self.rp_name).node
         )
 
-    def get_input_blocks(self) -> set[int]:
-        """The reference point drives the coupled node coordinates."""
-        return {self._rp_index}
+    def get_input_dofs(self) -> NDArray[np.int64]:
+        """The six reference-point coordinates drive this rigid coupling."""
+        start = self._assembly._RGC_list_indexStart[self._rp_index]
+        return np.arange(start, start + 6, dtype=np.int64)
 
-    def get_output_blocks(self) -> set[int]:
-        """The instance RGC block contains the reconstructed node DoFs.
-
-        The current block-level dependency graph intentionally uses the
-        instance block rather than individual node indices.  This is
-        conservative for multiple disjoint couples on one instance, while
-        remaining deterministic and safe for the common RP-to-node coupling
-        case.
-        """
-        return {self._instance_RGC_index}
+    def get_output_dofs(self) -> NDArray[np.int64]:
+        """Identify only the coupled nodes for dependency/ownership checks."""
+        start = self._assembly._RGC_list_indexStart[self._instance_RGC_index]
+        return (start + self._indexNodes[:, None] * 3 + np.arange(3, dtype=np.int64)).reshape(-1)
 
     def modify_RGC(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         """
