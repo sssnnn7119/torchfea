@@ -21,4 +21,8 @@ class ReferencePoint(BaseObj):
         elif isinstance(node, np.ndarray):
             node = torch.tensor(node.tolist())
         self.node = node
-        self._RGC_requirements = 6
+
+    @property
+    def _RGC_requirements(self) -> tuple[int, ...]:
+        """A reference point always owns six rigid-body coordinates."""
+        return (6,)

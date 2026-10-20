@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 from .model import Assembly
@@ -7,9 +6,9 @@ from .solver import BaseSolver
 from .interfaces import Serializable
 from .model_hash import controller_model_hash, controller_result_compatibility_hash
 
-class FEAController(Serializable):
 
-    _serialized_attributes_exclude = ['_model_hash']
+class FEAController(Serializable):
+    _serialized_attributes_exclude = ["_model_hash"]
 
     def __init__(self, maximum_iteration: int = 10000) -> None:
         """
@@ -18,7 +17,7 @@ class FEAController(Serializable):
         Args:
             nodes (torch.Tensor): The nodes of the finite element model.
         """
-        
+
         self.assembly: Assembly = None
         """The assembly containing instances, elements, and reference points."""
 
@@ -44,7 +43,9 @@ class FEAController(Serializable):
         self.assembly.initialize(*args, **kwargs)
         self.solver.initialize(assembly=self.assembly, *args, **kwargs)
 
-    def solve(self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs):
+    def solve(
+        self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs
+    ):
         """
         Solves the finite element analysis problem.
 
@@ -107,7 +108,7 @@ class FEAController(Serializable):
         """
         if visited is None:
             visited = set()
-        
+
         obj_id = id(obj)
         if obj_id in visited:
             return
@@ -128,7 +129,7 @@ class FEAController(Serializable):
         elif isinstance(obj, tuple):
             for v in obj:
                 self._change_device_recursive(v, device, visited)
-        elif hasattr(obj, '__dict__'):
+        elif hasattr(obj, "__dict__"):
             for k, v in list(obj.__dict__.items()):
                 if isinstance(v, torch.Tensor):
                     setattr(obj, k, v.to(device))
@@ -166,7 +167,7 @@ class FEAController(Serializable):
             list[torch.Tensor]: The reduced global coordinates.
         """
         return self.assembly._GC2RGC(GC)
-    
+
     def RGC2GC(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         """
         Convert reduced global coordinates (RGC) to global coordinates (GC).
@@ -189,6 +190,7 @@ class FEAController(Serializable):
         """
         self.assembly.set_work_conditions(work_conditions)
 
+
 def load_model(path: str) -> FEAController:
     """
     Load a finite element model from a file.
@@ -200,26 +202,14 @@ def load_model(path: str) -> FEAController:
         FEAController: The loaded finite element model.
     """
     with np.load(path, allow_pickle=True) as loaded:
-        serialized_data = loaded['data']
+        serialized_data = loaded["data"]
         controller = FEAController._deserialize(serialized_data)
-        stored_hash = str(np.asarray(loaded['model_hash']).reshape(-1)[0])
+        stored_hash = str(np.asarray(loaded["model_hash"]).reshape(-1)[0])
 
     # Deserialization restores only persistent fields.  Rebuild all links,
     # coordinate blocks, and enabled-object lists before the caller can use
     # the model.  Assembly.initialize() normalizes enabled=None to True.
     assembly = controller.assembly
-    objects = (
-        *assembly._instances.values(),
-        *assembly._loads.values(),
-        *assembly._constraints.values(),
-        *assembly._boundarys.values(),
-    )
-    for obj in objects:
-        if obj._RGC_requirements is None:
-            obj._RGC_requirements = [0]
-    for reference_point in assembly._reference_points.values():
-        if reference_point._RGC_requirements is None:
-            reference_point._RGC_requirements = 6
     for part in assembly._parts.values():
         if part.exterior_surface == "extern" and "extern" not in part.surfaces:
             boundary = []
@@ -241,6 +231,7 @@ def load_model(path: str) -> FEAController:
         raise ValueError("The model archive contains an empty model hash.")
     return controller
 
+
 def retrieve_source_code(path: str, path_out: str):
     """
     Retrieve the source code of subclasses from a saved model file for debugging purposes.
@@ -252,14 +243,16 @@ def retrieve_source_code(path: str, path_out: str):
 
     loaded = np.load(path, allow_pickle=True)
 
-    if 'source_code' not in loaded:
+    if "source_code" not in loaded:
         raise ValueError("The .npz file does not contain 'source_code' key.")
-    source_code = loaded['source_code'].item()  # Assuming source_code is stored as a dictionary in the .npz file
+    source_code = loaded[
+        "source_code"
+    ].item()  # Assuming source_code is stored as a dictionary in the .npz file
 
     result = ""
     for class_name, code in source_code.items():
         result += f"#========= Source code for {class_name} =========#\n"
         result += code + "\n\n"
-    
-    with open(path_out, 'w') as f:
+
+    with open(path_out, "w") as f:
         f.write(result)

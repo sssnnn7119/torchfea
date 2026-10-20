@@ -221,7 +221,6 @@ class Assembly(Serializable):
                         f"Part '{part_name}' not found for instance '{ins}'."
                     )
                 ins.part = assembly._parts[part_name]
-                ins._RGC_requirements = tuple(ins.part.nodes.shape)
 
         @staticmethod
         def _initialize_RGC(assembly: "Assembly"):

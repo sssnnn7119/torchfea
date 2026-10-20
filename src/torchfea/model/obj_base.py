@@ -20,8 +20,6 @@ class BaseObj(Serializable):
 
     def __init__(self) -> None:
         super().__init__()
-        self._RGC_requirements: list[int] = [0]
-        """Number of redundant generalized coordinates required by this object."""
         self._RGC_index: int = None
         """Index of this object's redundant generalized coordinates."""
         self._index_start: int = None
@@ -32,12 +30,14 @@ class BaseObj(Serializable):
         """Whether this object participates in analysis."""
 
     @property
-    def serialized_attributes(self):
-        """Return persistent object attributes."""
-        serialized_attrs = super().serialized_attributes
-        serialized_attrs = [attr for attr in serialized_attrs if attr != "_assembly"]
-        serialized_attrs.append("_RGC_requirements")
-        return serialized_attrs
+    def _RGC_requirements(self) -> tuple[int, ...]:
+        """Shape of this object's runtime redundant-coordinate block.
+
+        Most objects do not own redundant coordinates.  Objects that do
+        override this property derive the shape from their current model
+        state instead of storing a potentially stale value.
+        """
+        return (0,)
 
     def set_RGC_index(self, index: int) -> None:
         """Set the redundant-coordinate block index."""

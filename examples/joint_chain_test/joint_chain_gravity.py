@@ -20,7 +20,6 @@ import torchfea
 from torchfea.model.elements.materials import LinearElastic
 from torchfea.utils.maths import rotation_matrix_from_vector
 
-
 LINK_COUNT = 5
 LINK_LENGTH = 0.40
 LINK_RADIUS = 0.025
@@ -169,7 +168,7 @@ def build_chain_controller() -> tuple[torchfea.FEAController, dict[str, object]]
         zip(hinge_pairs, hinge_points)
     ):
         assembly.add_constraint(
-            torchfea.constraints.Joint(
+            torchfea.constraints.Connector(
                 master_rp_name=master_rp_name,
                 slave_rp_name=slave_rp_name,
                 translation_free_directions=[],
@@ -244,7 +243,9 @@ def solve_and_report(show_plot: bool = False):
         slave_position = _rp_current_connection_position(
             assembly, rgc, slave_name, point
         )
-        hinge_gaps.append(float(torch.linalg.vector_norm(master_position - slave_position)))
+        hinge_gaps.append(
+            float(torch.linalg.vector_norm(master_position - slave_position))
+        )
 
     out_of_plane = []
     for _part_name, instance_name in metadata["link_names"]:

@@ -164,6 +164,10 @@ class Serializable():
         
         obj = cls._subclasses[class_name].__new__(cls._subclasses[class_name])
         for attr, value in serialized_data.items():
+            # This field was persisted by older versions, but it is now a
+            # runtime property derived by each object from its current state.
+            if attr == "_RGC_requirements":
+                continue
             deserialized_value = cls._deserialize_obj(value)
             setattr(obj, attr, deserialized_value)
         return obj

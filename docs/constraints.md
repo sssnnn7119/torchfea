@@ -67,7 +67,7 @@ $$
 x_i = x_i^0 + u_i = x_{rp}^0 + v + R(\theta)r_i.
 $$
 
-代码中的 `_rotation3d()` 使用 Rodrigues 公式计算 $R(\theta)r_i$。
+代码中的 `rotate_vectors()` 使用 Rodrigues 公式计算 $R(\theta)r_i$。
 
 ### 2.2 自由度处理
 
@@ -218,6 +218,7 @@ $$
 - `skew_symmetric()` 构造叉乘矩阵 $[\cdot]_\times$；
 - `rotation_matrix_from_vector()` 使用矩阵指数计算旋转矩阵；
 - `rotation_vector_from_matrix()` 将旋转矩阵转换回旋转向量。
+- `rotate_vectors()` 使用 Rodrigues 公式直接旋转向量，不构造旋转矩阵；
 
 这些通用运算位于 `torchfea/utils/maths.py`，并保持 PyTorch 自动微分计算图。
 

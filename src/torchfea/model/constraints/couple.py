@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from ...utils.maths import rotate_vectors
 from .base import BaseConstraint
 
 
@@ -60,7 +61,7 @@ class Couple(BaseConstraint):
         RGC[self._couple_index] = RGC[self._couple_index].clone()
         RGC[self._couple_index][self._indexNodes] = (
             RGC[self._rp_index][:3]
-            + self._rotation3d(RGC[self._rp_index][3:], self._ref_location)
+            + rotate_vectors(RGC[self._rp_index][3:], self._ref_location)
             - self._ref_location
         )
 
@@ -266,7 +267,7 @@ class Couple(BaseConstraint):
 
         # basic derivatives
         y = self._ref_location
-        Y = v + self._rotation3d(z, y) - y
+        # Y = v + rotate_vectors(z, y) - y
 
         der_theta = (
             -y * torch.sin(theta)
@@ -336,25 +337,5 @@ class Couple(BaseConstraint):
 
         return Ydot, Ydot2
 
-    def _rotation3d(self, rotation_vector: torch.Tensor, vector0: torch.Tensor):
-        """
-        Rotate a 3D vector by a rotation vector
-        :param rotation_vector: rotation vector (3,)
-        :param vector0: 3D vector (n, 3)
-        :return: 3D vector (n, 3)
-        """
-        vector0 = vector0.view(-1, 3)
-        theta = torch.norm(rotation_vector) + 1e-20
-        if theta == 0:
-            return vector0
-        else:
-            rotation_vector = rotation_vector / theta
-            rotation_vector = rotation_vector.view(1, 3)
-            vector1 = (
-                vector0 * torch.cos(theta)
-                + torch.cross(rotation_vector, vector0, dim=1) * torch.sin(theta)
-                + rotation_vector
-                * (rotation_vector * vector0).sum(dim=1).unsqueeze(-1)
-                * (1 - torch.cos(theta))
-            )
-        return vector1
+    # Keep the old private entry point for callers that used it directly.
+    _rotation3d = staticmethod(rotate_vectors)

@@ -13,6 +13,7 @@ from . import elements
 from .obj_base import BaseObj
 from .elements import BaseSurface, BaseElement, surfaces
 from ..interfaces import Serializable
+from ..utils.maths import rotate_vectors
 import pyvista as pv
 
 class _Surfaces(Serializable):
@@ -729,6 +730,15 @@ class Instance(BaseObj):
             self.rotation_matrix = R
 
     @property
+    def _RGC_requirements(self) -> tuple[int, ...]:
+        """Shape of the instance coordinate block from its linked part."""
+        if self.part is None:
+            # The part is linked during Assembly.initialize().  Keep the
+            # object inspectable before then without storing a stale shape.
+            return (0, 3)
+        return tuple(self.part.nodes.shape)
+
+    @property
     def exterior_surface(self) -> str:
         """Forward the Part exterior surface name for instance-level access."""
         if self.part is None:
@@ -774,18 +784,8 @@ class Instance(BaseObj):
         vector0 = vector0.view(-1, 3)
         if rotation_vector is None:
             return vector0
-        
-        theta = torch.norm(rotation_vector)
-        if theta == 0:
-            return vector0
-        else:
-            rotation_vector = rotation_vector / theta
-            rotation_vector = rotation_vector.view(1, 3)
-            vector1 = vector0 * torch.cos(theta) + torch.cross(
-                rotation_vector, vector0, dim=1) * torch.sin(
-                    theta) + rotation_vector * (rotation_vector * vector0).sum(
-                        dim=1).unsqueeze(-1) * (1 - torch.cos(theta))
-        return vector1
+
+        return rotate_vectors(rotation_vector, vector0)
 
     def set_required_DoFs(self, RGC_remain_index):
         for e in self.part.elems.values():

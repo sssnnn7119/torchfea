@@ -5,6 +5,52 @@ from __future__ import annotations
 import torch
 
 
+def rotate_vectors(
+    rotation_vector: torch.Tensor,
+    vectors: torch.Tensor,
+) -> torch.Tensor:
+    """Rotate one or more 3D vectors with an axis-angle vector.
+
+    The rotation uses Rodrigues' formula directly and never constructs a
+    rotation matrix.  ``vectors`` may have shape ``(3,)`` or ``(n, 3)``;
+    the returned tensor always has shape ``(n, 3)``.
+    """
+    rotation_vector = rotation_vector.reshape(3)
+    vectors = vectors.reshape(-1, 3)
+
+    theta_squared = torch.dot(rotation_vector, rotation_vector)
+    dtype_info = torch.finfo(theta_squared.dtype)
+    # The clamp makes sqrt differentiable at the exact zero vector.  The
+    # resulting tiny angle is below floating-point resolution in the returned
+    # rotation, while the Taylor branch below supplies the correct values.
+    theta = torch.sqrt(theta_squared.clamp_min(dtype_info.tiny))
+    theta_safe = theta.clamp_min(dtype_info.eps)
+    theta_squared_safe = theta_squared.clamp_min(dtype_info.eps)
+
+    # Use Taylor expansions near zero so the operation remains finite and
+    # differentiable without a Python-side zero-angle branch.
+    small_angle = theta_squared < 1.0e-8
+    sinc = torch.where(
+        small_angle,
+        1.0 - theta_squared / 6.0 + theta_squared**2 / 120.0,
+        torch.sin(theta) / theta_safe,
+    )
+    cosc = torch.where(
+        small_angle,
+        0.5 - theta_squared / 24.0 + theta_squared**2 / 720.0,
+        (1.0 - torch.cos(theta)) / theta_squared_safe,
+    )
+
+    rotation = rotation_vector.expand_as(vectors)
+    cross = torch.cross(rotation, vectors, dim=1)
+    projection = (vectors * rotation_vector).sum(dim=1, keepdim=True)
+    return (
+        vectors * torch.cos(theta)
+        + cross * sinc
+        + rotation_vector * projection * cosc
+    )
+
+
 def skew_symmetric(vector: torch.Tensor) -> torch.Tensor:
     """Return the 3x3 skew-symmetric matrix of a 3-vector."""
     return torch.stack(

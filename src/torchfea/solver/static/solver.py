@@ -642,9 +642,6 @@ class StaticImplicitSolver(BaseSolver):
             t1 = time.time()
             R, K_indices, K_values = self.get_stiffness_matrix(GC_now=GC)
 
-            a=torch.cuda.memory_reserved()
-
-
             self._iter_now += 1
 
             # evaluate the newton direction
