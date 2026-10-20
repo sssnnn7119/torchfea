@@ -1,6 +1,7 @@
 import numpy as np
 import pyvista as pv
 import torch
+from numpy.typing import NDArray
 
 from ..interfaces import Serializable
 from . import Instance, ReferencePoint, boundarys, constraints, loads
@@ -331,14 +332,13 @@ class Assembly(Serializable):
         # dependency plan, and creates the reduced-coordinate maps.
         self.define_required_DoFs()
 
-    def _build_constraint_execution_plan(self):
+    def _build_constraint_execution_plan(self) -> None:
         """Build deterministic forward and reverse constraint plans.
 
         ``_constraints`` remains the persistent name-to-object registry.  The
-        derived lists below are runtime data.  A constraint whose output RGC
-        block is consumed by another constraint must execute first during
-        coordinate reconstruction.  Residual and tangent reduction use the
-        reverse order.
+        derived lists below are runtime data. Dependencies use global RGC
+        DoFs. Coordinate reconstruction executes producers first; residual
+        and tangent reduction use the reverse order.
         """
         enabled = {
             name: constraint
@@ -347,34 +347,54 @@ class Assembly(Serializable):
         }
 
         names = list(enabled.keys())
-        graph = {name: set() for name in names}
-        indegree = {name: 0 for name in names}
+        graph: dict[str, set[str]] = {name: set() for name in names}
+        indegree: dict[str, int] = {name: 0 for name in names}
 
-        inputs = {
-            name: set(constraint.get_input_blocks())
-            for name, constraint in enabled.items()
-        }
-        outputs = {
-            name: set(constraint.get_output_blocks())
-            for name, constraint in enabled.items()
-        }
+        # Sort compact output arrays with their writer IDs. Equal DoFs from
+        # different writers become adjacent, even if one writer repeats them.
+        output_dofs: list[NDArray[np.int64]] = [
+            constraint.get_output_dofs()
+            for constraint in enabled.values()
+        ]
+        written = np.concatenate(output_dofs) if output_dofs else np.empty(0, dtype=np.int64)
+        owners = np.repeat(np.arange(len(names), dtype=np.int64), [dofs.size for dofs in output_dofs])
+        permutation = np.argsort(written, kind="stable")
+        written, owners = written[permutation], owners[permutation]
+        duplicates = np.flatnonzero(
+            (written[1:] == written[:-1]) & (owners[1:] != owners[:-1])
+        )
+        if duplicates.size:
+            index = int(duplicates[0])
+            raise ValueError(
+                f"Dependent DoF {written[index]} is written by both constraints "
+                f"'{names[owners[index]]}' and '{names[owners[index + 1]]}'.")
 
-        for name_a in names:
-            for name_b in names:
-                if name_a == name_b:
-                    continue
-
-                # A writes a block consumed by B: A -> B.
-                if outputs[name_a] & inputs[name_b]:
-                    if name_b not in graph[name_a]:
-                        graph[name_a].add(name_b)
-                        indegree[name_b] += 1
+        # Sort and scan repeated targets before batch lookup, without scalar
+        # hash tables. Python only processes constraint edges, not DoFs.
+        for consumer, constraint in enabled.items():
+            dofs = constraint.get_input_dofs()
+            if not dofs.size or not written.size:
+                continue
+            dofs = np.sort(dofs)
+            dofs = dofs[np.r_[True, dofs[1:] != dofs[:-1]]]
+            positions = np.searchsorted(written, dofs)
+            in_bounds = positions < written.size
+            positions, dofs = positions[in_bounds], dofs[in_bounds]
+            matches = positions[written[positions] == dofs]
+            # Count into a constraint-sized array to collapse shared DoFs
+            # into one edge without allocating a model-sized ownership map.
+            producers = np.flatnonzero(np.bincount(owners[matches], minlength=len(names)))
+            for producer_index in producers:
+                producer = names[producer_index]
+                if producer != consumer:
+                    graph[producer].add(consumer)
+                    indegree[consumer] += 1
 
         # Kahn's algorithm.  Sorting the ready queue preserves the assembly's
         # deterministic dictionary order whenever multiple branches are
         # independent.
         ready = sorted(name for name in names if indegree[name] == 0)
-        order = []
+        order: list[str] = []
 
         while ready:
             name = ready.pop(0)
