@@ -588,7 +588,8 @@ class Workbench(QWidget):
             part_index = int(data[1])
             mesh_action = menu.addAction(T("剖分此 Part", "Mesh this Part"))
             mesh_action.triggered.connect(lambda _checked=False, p=part_index: self._mesh_part(p))
-        if kind == "part" and self.project.parts[int(data[1])].geometry.source.casefold() != "discrete":
+        # Export the same final CAD solid from either its Part or Geometry node.
+        if kind in {"part", "geometry"} and self.project.parts[int(data[1])].geometry.source.casefold() != "discrete":
             step_action = menu.addAction(T("导出 STEP", "Export STEP"))
             step_action.triggered.connect(
                 lambda _checked=False, p=int(data[1]): self.exportPartStepRequested.emit(p))
@@ -1548,6 +1549,12 @@ class Workbench(QWidget):
             mesh_part.setToolTip(T("只生成当前 Part 的 FE 网格", "Generate the FE mesh for this Part only"))
             mesh_part.clicked.connect(lambda: self._mesh_part(index))
             layout.addWidget(mesh_part)
+            # Reuse the Part export handler; STEP export needs no FE mesh.
+            export_step = QPushButton(T("导出 STEP", "Export STEP"))
+            export_step.setToolTip(T(
+                "导出当前 CAD 实体为 .stp 文件", "Export the current CAD solid as a .stp file"))
+            export_step.clicked.connect(lambda: self.exportPartStepRequested.emit(index))
+            layout.addWidget(export_step)
         else:
             delete = QPushButton(T("删除 CAD 特征", "Delete CAD feature")); delete.setStyleSheet("background:#9d3434")
             delete.clicked.connect(lambda: self._delete_feature(index, operation.id))

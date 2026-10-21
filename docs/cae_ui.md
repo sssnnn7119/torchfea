@@ -40,6 +40,7 @@ CAD 集合也属于这份历史。例如 `history.add_surface_set("top", 7)`、
 
 - 基本体：`Box`、`Wedge`、`Cylinder`、`Sphere`、`Cone`、`Torus`。
 - 外部几何：STEP 导入会作为 Part 的 `step_import` 特征保存，内容随原生模型序列化。
+- 导出几何：选中 CAD Part 的“几何 / 网格”节点，点击属性页或右键菜单的“导出 STEP”，保存为 `.stp`（也支持 `.step`）。导出当前特征历史的最终实体，包含布尔运算和 Part 内变换，不需要先剖分网格；Part 节点原有的导出入口同样可用。
 - 布尔特征：`Fuse`、`Cut`、`Intersect`、`Fragment`；两个或更多基本体可在同一 Part 的特征历史中组合。
 - Part 内变换：`Translate`、`Rotate`、`Dilate`（非均匀缩放）、`Mirror`。它们直接改变 OCC 特征历史，和 assembly instance 的显示/装配变换是两层不同概念。
 - 跨 Part 并集：工具栏“Part 并集合并”固定调用 OCC `fuse`，把两个未施加 instance 平移/转角的 Part 合并为一个带并集特征历史的新 Part；差集、交集和分割在 `FEAController.cad` 的 Part 历史中完成。
