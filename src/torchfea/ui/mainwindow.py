@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         workbench.exportInpRequested.connect(self.export_inp)
         workbench.exportPartStepRequested.connect(self.export_part_step)
         workbench.importPartStepRequested.connect(self.import_part_step)
+        workbench.importStepFeatureRequested.connect(self.import_part_step)
 
     def _connect_postprocess(self, postprocess: PostprocessPanel) -> None:
         postprocess.backRequested.connect(self.show_workbench)
@@ -359,14 +360,18 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, T("导出失败", "Export failed"), str(exc))
 
-    def import_part_step(self) -> None:
+    def import_part_step(self, part_index: int | None = None) -> None:
+        """Import STEP as a new Part or append a feature to the selected Part."""
         path, _ = QFileDialog.getOpenFileName(
             self, T("导入 STEP", "Import STEP"), "",
             "STEP geometry (*.stp *.step);;All (*)")
         if not path:
             return
         try:
-            self.workbench.add_step_part(path)
+            if part_index is None:
+                self.workbench.add_step_part(path)
+            else:
+                self.workbench.add_step_feature(part_index, path)
             self.project = self.workbench.project
             self.statusBar().showMessage(
                 T("已导入 STEP：", "Imported STEP: ") + path, 6000)

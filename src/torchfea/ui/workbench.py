@@ -84,6 +84,7 @@ class Workbench(QWidget):
     exportInpRequested = Signal()
     exportPartStepRequested = Signal(int)
     importPartStepRequested = Signal()
+    importStepFeatureRequested = Signal(int)
 
     def __init__(self, project: CAEProject | None = None, parent=None):
         super().__init__(parent)
@@ -493,6 +494,9 @@ class Workbench(QWidget):
 
         def add_geometry_actions(part_index):
             add_section(T("几何", "Geometry"))
+            add_action(
+                T("导入 STEP 特征", "Import STEP feature"),
+                lambda p=part_index: self.importStepFeatureRequested.emit(p))
             primitives = [
                 (T("Box", "Box"), "box"),
                 (T("Wedge", "Wedge"), "wedge"),
@@ -1540,11 +1544,15 @@ class Workbench(QWidget):
         if geometry_context:
             add_primitive = QPushButton("+ " + T("添加基本体", "Add primitive"))
             add_primitive.clicked.connect(lambda: self._add_primitive(index))
+            # Import into this history through the kernel's StepImport feature.
+            import_step = QPushButton("+ " + T("导入 STEP 特征", "Import STEP feature"))
+            import_step.clicked.connect(lambda: self.importStepFeatureRequested.emit(index))
             add_boolean = QPushButton("+ " + T("布尔运算", "Boolean operation"))
             add_boolean.clicked.connect(lambda: self._add_boolean(index))
             add_transform = QPushButton("+ " + T("变换", "Transform"))
             add_transform.clicked.connect(lambda: self._add_transform(index))
             layout.addWidget(add_primitive); layout.addWidget(add_boolean); layout.addWidget(add_transform)
+            layout.addWidget(import_step)
             mesh_part = QPushButton(T("剖分此 Part", "Mesh this Part"))
             mesh_part.setToolTip(T("只生成当前 Part 的 FE 网格", "Generate the FE mesh for this Part only"))
             mesh_part.clicked.connect(lambda: self._mesh_part(index))
@@ -1865,6 +1873,21 @@ class Workbench(QWidget):
             name=f"{name}-1", part_name=name))
         self._active_tree_data = ("part", len(self.project.parts) - 1)
         self._changed(T(f"已导入 Part：{name}", f"Imported Part: {name}"))
+
+    def add_step_feature(self, part_index: int, path: str) -> None:
+        """Append an embedded STEP feature to an existing Part's CAD history."""
+        geometry = self.project.parts[part_index].geometry
+        if geometry.source.casefold() == "discrete":
+            raise ValueError(T(
+                "离散网格 Part 没有可追加特征的 CAD 历史。",
+                "A discrete mesh Part has no CAD history to append features to."))
+
+        # Let the kernel read/embed the file and allocate a unique feature ID
+        # before changing the project, so failed reads leave it untouched.
+        feature = CADHistory(geometry.operations).import_step(path)
+        geometry.operations.append(feature)
+        self._active_tree_data = ("feature", part_index, feature.id)
+        self._changed(T("已导入 STEP 特征", "STEP feature imported"))
 
     def add_instance(self):
         if not self.project.parts:

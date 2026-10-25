@@ -15,10 +15,11 @@ calls this kernel module and contains no CAD execution implementation.
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 import logging
 import os
 import threading
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import numpy as np
 import torch
@@ -31,6 +32,23 @@ LOGGER = logging.getLogger("torchfea.cae")
 
 
 _GMSH_LOCK = threading.RLock()
+
+
+@contextmanager
+def occ_session(name: str) -> Iterator[OCCBuilder]:
+    """Own one serialized Gmsh/OCC session for geometry, preview or meshing."""
+    import gmsh
+
+    with _GMSH_LOCK:
+        if gmsh.isInitialized():
+            raise RuntimeError("A managed OCC session cannot replace an active Gmsh model.")
+        gmsh.initialize(interruptible=False)
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add(name)
+            yield OCCBuilder(gmsh)
+        finally:
+            gmsh.finalize()
 
 
 def _operation_list(source: Iterable[CADOperation] | CADHistory) -> list[CADOperation]:
@@ -226,6 +244,10 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
         points, local = _local_nodes(node_tags, node_coords)
         vertex_nodes = _vertex_mesh_nodes(gmsh, local)
+        curve_nodes = {
+            int(tag): local(gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)[0]).astype(int)
+            for _, tag in gmsh.model.getEntities(1)
+        }
         connectivity, volume_elements = _volume_tetrahedra(gmsh, volumes, local)
         surface_triangles = {tag: _surface_triangles(gmsh, tag, local)
                              for _dim, tag in _boundary_surfaces(gmsh, volumes)}
@@ -288,6 +310,7 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
     part._gmsh_surface_nodes = surface_nodes
     part._gmsh_volume_elements = volume_elements
     part._gmsh_vertex_nodes = vertex_nodes
+    part._gmsh_curve_nodes = curve_nodes
     if history is not None:
         _apply_history_sets(part, history)
     else:
@@ -330,6 +353,7 @@ def _apply_history_sets(part, history: CADHistory) -> None:
             ("surface", "surface"): part._gmsh_surface_sets,
             ("node", "surface"): part._gmsh_surface_nodes,
             ("node", "vertex"): part._gmsh_vertex_nodes,
+            ("node", "curve"): part._gmsh_curve_nodes,
             ("element", "volume"): part._gmsh_volume_elements,
         }
         try:

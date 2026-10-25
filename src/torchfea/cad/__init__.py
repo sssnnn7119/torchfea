@@ -41,10 +41,19 @@ from .history import CADModel, CADHistory, CADSetDefinition
 from .occ import (
     create_part,
     export_step,
+    occ_session,
     preview_discrete_part,
     preview_brep,
 )
+from .brep import (
+    BREPEdge, BREPFace, BREPTopology, BREPVertex,
+    convert_faces_to_nurbs, entity_signature, match_entity_names,
+    read_brep_topology, remove_unused_brep_entities,
+)
 __all__ = [
+    "BREPEdge", "BREPFace", "BREPTopology", "BREPVertex",
+    "convert_faces_to_nurbs", "entity_signature", "match_entity_names",
+    "read_brep_topology", "remove_unused_brep_entities",
     "CADModel",
     "CADHistory",
     "CADSetDefinition",
@@ -69,6 +78,7 @@ __all__ = [
     "Mirror",
     "create_part",
     "export_step",
+    "occ_session",
     "preview_discrete_part",
     "preview_brep",
 ]
