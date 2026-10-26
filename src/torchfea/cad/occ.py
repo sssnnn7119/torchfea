@@ -489,5 +489,9 @@ def _set_preview_size(gmsh, volumes: list[int]) -> None:
         raise RuntimeError("Cannot determine a BREP preview bounding box.")
     extent = max(max(box[3] - box[0], box[4] - box[1], box[5] - box[2]) for box in boxes)
     size = max(extent / 28.0, 1e-3)
-    gmsh.option.setNumber("Mesh.MeshSizeMin", size)
+    # Display tessellation must follow shrinking curvature radii near poles
+    # and cone tips. A uniform minimum size leaves a long, poorly resolved
+    # tip even though every mesh vertex lies on the exact CAD surface.
+    gmsh.option.setNumber("Mesh.MeshSizeMin", size / 32.0)
     gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 24)
