@@ -60,7 +60,7 @@ def _operation_list(source: Iterable[CADOperation] | CADHistory) -> list[CADOper
 def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
     """Return face-wise display geometry for the final native OCC solid.
 
-    Temporary two-dimensional Gmsh triangles are visualization tessellation,
+    Native OpenCASCADE triangles are visualization tessellation,
     not the analysis mesh. Each record keeps its BREP surface and volume tags
     so selections are stable until volume meshing.
     """
@@ -86,24 +86,29 @@ def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
         gmsh.clear(); gmsh.model.add("torchfea_brep_preview")
         volumes = OCCBuilder(gmsh).replay(operations)
         LOGGER.debug("BREP OCC history built: final_volumes=%s", volumes)
-        _set_preview_size(gmsh, volumes)
-        gmsh.model.mesh.generate(2)
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        points, local = _local_nodes(node_tags, node_coords)
+        linear_deflection = _preview_deflection(gmsh, volumes)
+        from .tessellation import triangulate_faces
+
+        surfaces = _boundary_surfaces(gmsh, volumes)
+        face_edges = {tag: [edge_tag for _, edge_tag in _surface_curves(gmsh, tag)]
+                      for _, tag in surfaces}
+        points, face_triangles, edge_polylines = triangulate_faces(
+            gmsh, face_edges, linear_deflection,
+        )
         vertex_tags, vertex_points = _occ_vertices(gmsh)
         records: list[dict] = []
-        for _dimension, surface_tag in _boundary_surfaces(gmsh, volumes):
-            triangles = _surface_triangles(gmsh, surface_tag, local)
+        for _dimension, surface_tag in surfaces:
+            triangles = face_triangles[surface_tag]
             if not len(triangles):
                 raise RuntimeError(
-                    f"Gmsh produced no triangular display mesh for BREP surface {surface_tag}.")
+                    f"OpenCASCADE produced no display triangles for BREP surface {surface_tag}.")
             owners = [tag for tag in volumes if (2, surface_tag) in gmsh.model.getBoundary([(3, tag)], False, False)]
             if not owners:
                 raise RuntimeError(
                     f"BREP surface {surface_tag} is not owned by a final volume.")
             edge_lines = []
-            for _edge_dimension, edge_tag in _surface_curves(gmsh, surface_tag):
-                lines = _curve_lines(gmsh, edge_tag, local)
+            for edge_tag in face_edges[surface_tag]:
+                lines = edge_polylines[edge_tag]
                 if len(lines):
                     edge_lines.append({"edge_tag": int(edge_tag), "lines": lines})
             records.append({"points": points, "triangles": triangles, "surface_tag": int(surface_tag),
@@ -112,9 +117,9 @@ def preview_brep(operations: Iterable[CADOperation] | CADHistory) -> list[dict]:
                             "vertex_tags": vertex_tags, "vertex_points": vertex_points})
         LOGGER.info("BREP preview complete: faces=%d display_nodes=%d", len(records), len(points))
         return records
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("BREP preview failed")
-        raise
+        raise RuntimeError(f"CAD preview failed: {exc}") from exc
     finally:
         try:
             gmsh.finalize()
@@ -236,6 +241,11 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         gmsh.clear(); gmsh.model.add("torchfea_analysis_mesh")
         volumes = OCCBuilder(gmsh).replay(operations)
         LOGGER.debug("FE OCC history built: final_volumes=%s", volumes)
+        from .meshing import restore_entity_arrays, split_closed_faces
+
+        boundary_tags = [tag for _, tag in _boundary_surfaces(gmsh, volumes)]
+        volumes, entity_map = split_closed_faces(gmsh, volumes)
+
         gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
         LOGGER.debug("Gmsh 3D mesh.generate(3) begin")
@@ -251,6 +261,11 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         connectivity, volume_elements = _volume_tetrahedra(gmsh, volumes, local)
         surface_triangles = {tag: _surface_triangles(gmsh, tag, local)
                              for _dim, tag in _boundary_surfaces(gmsh, volumes)}
+        vertex_nodes = restore_entity_arrays(vertex_nodes, 0, entity_map)
+        curve_nodes = restore_entity_arrays(curve_nodes, 1, entity_map)
+        volume_elements = restore_entity_arrays(volume_elements, 3, entity_map)
+        surface_triangles = restore_entity_arrays(surface_triangles, 2, entity_map)
+        surface_triangles = {tag: surface_triangles[tag] for tag in boundary_tags}
         missing_surfaces = [tag for tag, triangles in surface_triangles.items() if not len(triangles)]
         if missing_surfaces:
             raise RuntimeError(f"Gmsh produced no triangular boundary mesh for surfaces: {missing_surfaces}")
@@ -453,14 +468,6 @@ def _surface_curves(gmsh, surface_tag: int) -> list[tuple[int, int]]:
         [(2, int(surface_tag))], oriented=False, recursive=False)))
 
 
-def _curve_lines(gmsh, tag: int, local):
-    """Return local two-node display segments for an OCC boundary curve."""
-    types, _tags, node_blocks = gmsh.model.mesh.getElements(1, int(tag))
-    blocks = [local(np.asarray(nodes).reshape(-1, 2))
-              for typ, nodes in zip(types, node_blocks) if int(typ) == 1]
-    return np.concatenate(blocks, axis=0) if blocks else np.empty((0, 2), dtype=int)
-
-
 def _boundary_surfaces(gmsh, volumes: list[int]) -> list[tuple[int, int]]:
     return sorted(set(gmsh.model.getBoundary([(3, tag) for tag in volumes], oriented=False, recursive=False)))
 
@@ -481,13 +488,12 @@ def _tet_face_lookup(connectivity: np.ndarray, face_map: dict[int, list[int]]):
     return result
 
 
-def _set_preview_size(gmsh, volumes: list[int]) -> None:
+def _preview_deflection(gmsh, volumes: list[int]) -> float:
+    """Return the native display chord tolerance from the CAD extent."""
     if not volumes:
         raise RuntimeError("Cannot tessellate a BREP preview without a final OCC volume.")
     boxes = [gmsh.model.getBoundingBox(3, tag) for tag in volumes]
     if not boxes:
         raise RuntimeError("Cannot determine a BREP preview bounding box.")
     extent = max(max(box[3] - box[0], box[4] - box[1], box[5] - box[2]) for box in boxes)
-    size = max(extent / 28.0, 1e-3)
-    gmsh.option.setNumber("Mesh.MeshSizeMin", size)
-    gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+    return max(extent / 1000.0, 1e-8)
