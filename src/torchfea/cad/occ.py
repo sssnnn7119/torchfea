@@ -241,6 +241,11 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         gmsh.clear(); gmsh.model.add("torchfea_analysis_mesh")
         volumes = OCCBuilder(gmsh).replay(operations)
         LOGGER.debug("FE OCC history built: final_volumes=%s", volumes)
+        from .meshing import restore_entity_arrays, split_closed_faces
+
+        boundary_tags = [tag for _, tag in _boundary_surfaces(gmsh, volumes)]
+        volumes, entity_map = split_closed_faces(gmsh, volumes)
+
         gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
         LOGGER.debug("Gmsh 3D mesh.generate(3) begin")
@@ -256,6 +261,11 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         connectivity, volume_elements = _volume_tetrahedra(gmsh, volumes, local)
         surface_triangles = {tag: _surface_triangles(gmsh, tag, local)
                              for _dim, tag in _boundary_surfaces(gmsh, volumes)}
+        vertex_nodes = restore_entity_arrays(vertex_nodes, 0, entity_map)
+        curve_nodes = restore_entity_arrays(curve_nodes, 1, entity_map)
+        volume_elements = restore_entity_arrays(volume_elements, 3, entity_map)
+        surface_triangles = restore_entity_arrays(surface_triangles, 2, entity_map)
+        surface_triangles = {tag: surface_triangles[tag] for tag in boundary_tags}
         missing_surfaces = [tag for tag, triangles in surface_triangles.items() if not len(triangles)]
         if missing_surfaces:
             raise RuntimeError(f"Gmsh produced no triangular boundary mesh for surfaces: {missing_surfaces}")

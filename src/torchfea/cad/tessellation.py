@@ -2,46 +2,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import ModuleType
 
 import numpy as np
-from OCP.BRep import BRep_Builder, BRep_Tool
-from OCP.BRepGProp import BRepGProp
+from OCP.BRep import BRep_Tool
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.BRepTools import BRepTools
-from OCP.GProp import GProp_GProps
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_FORWARD, TopAbs_REVERSED, TopAbs_ShapeEnum
-from OCP.TopExp import TopExp_Explorer
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopLoc import TopLoc_Location
-from OCP.TopoDS import TopoDS, TopoDS_Shape
+from OCP.TopoDS import TopoDS
 
 
-def _shape_signature(shape: TopoDS_Shape, dimension: int) -> np.ndarray:
-    """Use the same exact mass properties as Gmsh's OCC topology identities."""
-    properties = GProp_GProps()
-    if dimension == 2:
-        BRepGProp.SurfaceProperties_s(shape, properties)
-    else:
-        BRepGProp.LinearProperties_s(shape, properties)
-    center = properties.CentreOfMass()
-    inertia = properties.MatrixOfInertia()
-    return np.array([
-        properties.Mass(), center.X(), center.Y(), center.Z(),
-        *(inertia.Value(row, column) for row in range(1, 4) for column in range(1, 4)),
-    ])
-
-
-def _subshapes(shape: TopoDS_Shape, kind: TopAbs_ShapeEnum) -> list[TopoDS_Shape]:
-    """List unique topological objects, retaining their original orientation."""
-    shapes: dict[TopoDS_Shape, TopoDS_Shape] = {}
-    explorer = TopExp_Explorer(shape, kind)
-    while explorer.More():
-        item = explorer.Current()
-        shapes.setdefault(item.Oriented(TopAbs_FORWARD), item)
-        explorer.Next()
-    return list(shapes.values())
+from .native import _shape_signature, _subshapes, read_native_geometry
 
 
 def triangulate_faces(
@@ -54,12 +25,7 @@ def triangulate_faces(
     Gmsh transfers exact BREP geometry and topology identities only. All
     display coordinates, triangles and boundary polylines come from OCC.
     """
-    with TemporaryDirectory(prefix="torchfea_preview_") as directory:
-        path = Path(directory) / "geometry.brep"
-        gmsh.write(str(path))
-        shape = TopoDS_Shape()
-        if not BRepTools.Read_s(shape, str(path), BRep_Builder()):
-            raise RuntimeError("Cannot read the native CAD preview geometry.")
+    shape = read_native_geometry(gmsh)
 
     mesher = BRepMesh_IncrementalMesh(shape, linear_deflection, False, 0.15, True)
     if not mesher.IsDone():
