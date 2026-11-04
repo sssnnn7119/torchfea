@@ -19,6 +19,7 @@ from contextlib import contextmanager
 import logging
 import os
 import threading
+from time import perf_counter
 from typing import Iterable, Iterator
 
 import numpy as np
@@ -280,15 +281,16 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         finally:
             _GMSH_LOCK.release()
 
-    LOGGER.info("FE mesh raw result: nodes=%d C3D4=%d volumes=%d surfaces=%d",
-                len(points), len(connectivity), len(volume_elements), len(surface_triangles))
+    LOGGER.info("FE mesh raw result: nodes=%d C3D4=%d volumes=%d surfaces=%d device=%s",
+                len(points), len(connectivity), len(volume_elements), len(surface_triangles),
+                torch.get_default_device())
+    conversion_start = perf_counter()
     if not len(connectivity):
         raise RuntimeError("Native Gmsh meshing did not produce C3D4 tetrahedra.")
     part = Part(torch.tensor(points, dtype=torch.get_default_dtype()))
     element = initialize_element("C3D4", torch.arange(int(len(connectivity)), dtype=torch.long),
                                  torch.tensor(connectivity, dtype=torch.long))
     part.add_element(element, "C3D4")
-    part.add_surface_set("extern", element.extract_boundary_surface_set())
     # These are analysis-wide system collections.  They are deliberately
     # created outside the editable UI definition so every freshly meshed
     # Part has stable names for BCs, exports, and post-processing.
@@ -299,7 +301,22 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
     if not len(all_surface_nodes):
         raise RuntimeError("Gmsh produced no nodes on the Part exterior surface.")
     part.add_node_set("surface_all", all_surface_nodes)
+    # Connectivity is already a CPU NumPy array. Reuse this topology index
+    # for the exterior set and CAD face sets; traversing Torch faces here
+    # would perform two per-face CPU conversions, including GPU synchronizations.
     face_lookup = _tet_face_lookup(connectivity, element.surfaceid_map)
+    exterior_groups: dict[int, list[int]] = {side: [] for side in element.surfaceid_map}
+    for match in face_lookup.values():
+        if match is not None:
+            element_id, side = match
+            exterior_groups[side].append(element_id)
+    part.add_surface_set("extern", [
+        (np.sort(np.asarray(ids, dtype=np.int64)), side)
+        for side, ids in exterior_groups.items() if ids
+    ])
+    LOGGER.info("FE mesh topology complete: boundary_faces=%d elapsed=%.3fs",
+                sum(len(ids) for ids in exterior_groups.values()),
+                perf_counter() - conversion_start)
     gmsh_surface_sets: dict[int, list[tuple[np.ndarray, int]]] = {}
     for tag, triangles in surface_triangles.items():
         grouped: dict[int, list[int]] = defaultdict(list)
@@ -330,11 +347,11 @@ def create_part(operations: Iterable[CADOperation] | CADHistory, mesh_size: floa
         _apply_history_sets(part, history)
     else:
         part.exterior_surface = "extern"
-    LOGGER.info("FE mesh complete: torchfea nodes=%s elements=%s generated_sets=%s",
+    LOGGER.info("FE mesh complete: torchfea nodes=%s elements=%s generated_sets=%s conversion_time=%.3fs",
                 tuple(part.nodes.shape),
                 {name: tuple(element._elems.shape) for name, element in part.elems.items()},
                 {"node": ["all", "surface_all"],
-                 "element": ["all"]})
+                 "element": ["all"]}, perf_counter() - conversion_start)
     return part
 
 
