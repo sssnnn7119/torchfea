@@ -1,9 +1,12 @@
-import torch
 import numpy as np
+import torch
+
 from .base import BaseLoad
 
 
-def _spring_tangent_block(d: torch.Tensor, k: float, L0: float, eps: float = 1e-12) -> torch.Tensor:
+def _spring_tangent_block(
+    d: torch.Tensor, k: float, L0: float, eps: float = 1e-12
+) -> torch.Tensor:
     """
     Compute the 3x3 tangent block for a geometrically exact axial spring.
 
@@ -42,20 +45,27 @@ class Spring_RP_RP(BaseLoad):
         rest_length (optional): rest length L0; defaults to initial distance between RPs
     """
 
-    _serialized_attributes_exclude = ['_rp_index1', '_rp_index2', '_idx_tr1', '_idx_tr2']
+    _serialized_attributes_exclude = [
+        "_rp_index1",
+        "_rp_index2",
+        "_idx_tr1",
+        "_idx_tr2",
+    ]
 
-    def __init__(self, rp_name1: str, rp_name2: str, k: float, rest_length: float | None = None) -> None:
+    def __init__(
+        self, rp_name1: str, rp_name2: str, k: float, rest_length: float | None = None
+    ) -> None:
         super().__init__()
         self.rp_name1 = rp_name1
         self.rp_name2 = rp_name2
-        
+
         rl = rest_length if rest_length is not None else -1.0
         self._parameters = torch.tensor([k, rl], dtype=torch.float64)
 
     @property
     def k(self) -> float:
         return self._parameters[0]
-    
+
     @k.setter
     def k(self, value: float) -> None:
         self._parameters[0] = value
@@ -63,7 +73,7 @@ class Spring_RP_RP(BaseLoad):
     @property
     def rest_length(self) -> float:
         return self._parameters[1]
-    
+
     @rest_length.setter
     def rest_length(self, value: float) -> None:
         self._parameters[1] = value
@@ -83,8 +93,12 @@ class Spring_RP_RP(BaseLoad):
 
         s1 = assembly._RGC_list_indexStart[self._rp_index1]
         s2 = assembly._RGC_list_indexStart[self._rp_index2]
-        self._idx_tr1 = torch.arange(s1, s1 + 3, device=assembly.device, dtype=torch.int64)
-        self._idx_tr2 = torch.arange(s2, s2 + 3, device=assembly.device, dtype=torch.int64)
+        self._idx_tr1 = torch.arange(
+            s1, s1 + 3, device=assembly.device, dtype=torch.int64
+        )
+        self._idx_tr2 = torch.arange(
+            s2, s2 + 3, device=assembly.device, dtype=torch.int64
+        )
 
         # Default rest length from initial geometry if not provided
         if self.rest_length < 0:
@@ -92,12 +106,20 @@ class Spring_RP_RP(BaseLoad):
             p2 = rp2.node.to(assembly.device).to(torch.get_default_dtype())
             self.rest_length = torch.linalg.norm(p2 - p1).item()
 
-    def get_stiffness(self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs):
+    def _get_stiffness(
+        self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs
+    ):
         # Current positions of the two RPs
         rp1 = self._assembly.get_reference_point(self.rp_name1)
         rp2 = self._assembly.get_reference_point(self.rp_name2)
-        x1 = rp1.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index1][:3]
-        x2 = rp2.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index2][:3]
+        x1 = (
+            rp1.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index1][:3]
+        )
+        x2 = (
+            rp2.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index2][:3]
+        )
 
         d = x2 - x1
         l = torch.linalg.norm(d)
@@ -135,25 +157,37 @@ class Spring_RP_RP(BaseLoad):
         rows22 = self._idx_tr2.repeat_interleave(3)
         cols22 = self._idx_tr2.repeat(3)
 
-        K_indices = torch.stack([
-            torch.cat([rows11, rows12, rows21, rows22], dim=0),
-            torch.cat([cols11, cols12, cols21, cols22], dim=0)
-        ], dim=0)
+        K_indices = torch.stack(
+            [
+                torch.cat([rows11, rows12, rows21, rows22], dim=0),
+                torch.cat([cols11, cols12, cols21, cols22], dim=0),
+            ],
+            dim=0,
+        )
 
-        K_values = torch.cat([
-            (-K_block).reshape(-1),  # K11
-            (K_block).reshape(-1),   # K12
-            (K_block).reshape(-1),   # K21
-            (-K_block).reshape(-1)   # K22
-        ], dim=0)
+        K_values = torch.cat(
+            [
+                (-K_block).reshape(-1),  # K11
+                (K_block).reshape(-1),  # K12
+                (K_block).reshape(-1),  # K21
+                (-K_block).reshape(-1),  # K22
+            ],
+            dim=0,
+        )
 
         return F_indices, F_values, K_indices, K_values
 
-    def get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
+    def _get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         rp1 = self._assembly.get_reference_point(self.rp_name1)
         rp2 = self._assembly.get_reference_point(self.rp_name2)
-        x1 = rp1.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index1][:3]
-        x2 = rp2.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index2][:3]
+        x1 = (
+            rp1.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index1][:3]
+        )
+        x2 = (
+            rp2.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index2][:3]
+        )
         l = torch.linalg.norm(x2 - x1)
         # Negative sign so Assembly._total_Potential_Energy adds spring energy (internal-like)
         return -0.5 * self.k * (l - self.rest_length) ** 2
@@ -175,10 +209,12 @@ class Spring_RP_Point(BaseLoad):
         rest_length (optional): rest length L0; defaults to initial distance between RP and point
     """
 
-    _serialized_attributes_exclude = ['_rp_index', '_idx_tr']
+    _serialized_attributes_exclude = ["_rp_index", "_idx_tr"]
 
-    def __init__(self, rp_name: str, point: list[float], k: float, rest_length: float = None) -> None:
-        
+    def __init__(
+        self, rp_name: str, point: list[float], k: float, rest_length: float = None
+    ) -> None:
+
         super().__init__()
         self.rp_name = rp_name
 
@@ -203,14 +239,18 @@ class Spring_RP_Point(BaseLoad):
             x0 = rp.node.to(assembly.device).to(torch.get_default_dtype())
             self.rest_length = torch.linalg.norm(self.point - x0)
 
-    def get_stiffness(self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs):
+    def _get_stiffness(
+        self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs
+    ):
 
         if type(self.point) != torch.Tensor:
             self.point = torch.tensor(self.point)
-        
 
         rp = self._assembly.get_reference_point(self.rp_name)
-        x = rp.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index][:3]
+        x = (
+            rp.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index][:3]
+        )
         d = self.point - x
         l = torch.linalg.norm(d)
 
@@ -239,12 +279,15 @@ class Spring_RP_Point(BaseLoad):
         K_values = (-K_block).reshape(-1)  # derivative wrt RP coords
         return F_indices, F_values, K_indices, K_values
 
-    def get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
+    def _get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         if type(self.point) != torch.Tensor:
             self.point = torch.tensor(self.point)
-            
+
         rp = self._assembly.get_reference_point(self.rp_name)
-        x = rp.node.to(self._assembly.device).to(torch.get_default_dtype()) + RGC[self._rp_index][:3]
+        x = (
+            rp.node.to(self._assembly.device).to(torch.get_default_dtype())
+            + RGC[self._rp_index][:3]
+        )
         l = torch.linalg.norm(self.point - x)
         # Negative sign so Assembly._total_Potential_Energy adds spring energy (internal-like)
         return -0.5 * self.k * (l - self.rest_length) ** 2

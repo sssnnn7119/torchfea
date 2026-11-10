@@ -1,23 +1,37 @@
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ... import Assembly
+import logging
 import time
+
 import torch
+
+from ...model.loads.base import ContinuousLoad
 from .. import _linear_solver
 from ..basesolver import BaseSolver
 from .result import StaticResult
 
-import logging
 logger = logging.getLogger(__name__)
 
+
 class StaticImplicitSolver(BaseSolver):
+    _serialized_attributes_exclude = ["_StaticImplicitSolver__low_alpha_count"]
 
-    _serialized_attributes_exclude = ['_StaticImplicitSolver__low_alpha_count']
-
-    def __init__(self, maximum_iteration: int = 10000, tol_error: float = 1e-5) -> None:
+    def __init__(
+        self,
+        maximum_iteration: int = 10000,
+        tol_error: float = 1e-5,
+        initial_increment: float = 1.0,
+        maximum_increment: float = 1.0,
+        minimum_increment: float = 1e-4,
+        cutback_factor: float = 0.5,
+        growth_factor: float = 1.5,
+        maximum_cutbacks: int = 12,
+    ) -> None:
         """
         Initialize the FEA class.
 
@@ -47,8 +61,50 @@ class StaticImplicitSolver(BaseSolver):
 
         self.__low_alpha_count = 0
 
+        if not 0.0 < initial_increment <= 1.0:
+            raise ValueError("initial_increment must be in (0, 1]")
+        if not 0.0 < minimum_increment <= maximum_increment <= 1.0:
+            raise ValueError("minimum_increment <= maximum_increment <= 1 must hold")
+        if not 0.0 < cutback_factor < 1.0:
+            raise ValueError("cutback_factor must be in (0, 1)")
+        if growth_factor < 1.0:
+            raise ValueError("growth_factor must be >= 1")
+        if maximum_cutbacks < 0:
+            raise ValueError("maximum_cutbacks must be non-negative")
 
-    def solve(self, GC0: torch.Tensor = None, need_jacobian: bool = False, *args, **kwargs) -> StaticResult:
+        self.initial_increment: float = initial_increment
+        """Initial load-factor increment for continuous loads."""
+        self.maximum_increment: float = maximum_increment
+        """Largest load-factor increment allowed after successful steps."""
+        self.minimum_increment: float = minimum_increment
+        """Smallest load-factor increment before reporting failure."""
+        self.cutback_factor: float = cutback_factor
+        """Multiplier applied to an increment after a failed Newton solve."""
+        self.growth_factor: float = growth_factor
+        """Multiplier applied after a successful increment."""
+        self.maximum_cutbacks: int = maximum_cutbacks
+        """Maximum number of failed increment attempts."""
+
+    @classmethod
+    def _deserialize(cls, data):
+        """Deserialize a solver and migrate archives without continuation fields."""
+        solver = super()._deserialize(data)
+        defaults = {
+            "initial_increment": 1.0,
+            "maximum_increment": 1.0,
+            "minimum_increment": 1e-4,
+            "cutback_factor": 0.5,
+            "growth_factor": 1.5,
+            "maximum_cutbacks": 12,
+        }
+        for name, value in defaults.items():
+            if name not in solver.__dict__:
+                setattr(solver, name, value)
+        return solver
+
+    def solve(
+        self, GC0: torch.Tensor = None, need_jacobian: bool = False, *args, **kwargs
+    ) -> StaticResult:
         """
         Solves the finite element analysis problem and returns a StaticResult object.
 
@@ -65,22 +121,31 @@ class StaticImplicitSolver(BaseSolver):
         if GC0 is None:
             GC0 = self.assembly._GC
 
-
-        logger.info('---' * 8 + ' FEA Start ' + '---' * 8)
+        logger.info("---" * 8 + " FEA Start " + "---" * 8)
 
         with torch.no_grad():
-            solve_output = self._solve_iteration(GC=GC0, tol_error=self.tol_error)
+            solve_output = self._solve_with_cutback(
+                GC=GC0,
+                tol_error=self.tol_error,
+            )
 
-        GC_final, total_time_iter, time_items, converged = solve_output
+        (
+            GC_final,
+            total_time_iter,
+            time_items,
+            converged,
+            load_factor,
+        ) = solve_output
+        self._set_continuation_factor(load_factor)
         self.assembly._GC = GC_final
         self.assembly._RGC = self.assembly.refine_RGC(self.assembly._GC2RGC(GC_final))
         t2 = time.time()
 
         # print the information
-        logger.info('total_iter:%d, total_time:%.2f' % (self._iter_now, t2 - t0))
+        logger.info("total_iter:%d, total_time:%.2f" % (self._iter_now, t2 - t0))
         R = self.get_stiffness_matrix(GC_now=GC_final)[0]
-        logger.info('max_error:%.4e' % (R.abs().max()))
-        logger.info('---' * 8 + ' FEA Finished ' + '---' * 8)
+        logger.info("max_error:%.4e" % (R.abs().max()))
+        logger.info("---" * 8 + " FEA Finished " + "---" * 8)
 
         # build the result object
         fe_result = StaticResult(
@@ -96,8 +161,10 @@ class StaticImplicitSolver(BaseSolver):
             fe_result.jacobian = jacobian
 
         return fe_result
-   
-    def get_jacobian(self, result: StaticResult, load_names: list[str] = None) -> torch.Tensor:
+
+    def get_jacobian(
+        self, result: StaticResult, load_names: list[str] = None
+    ) -> torch.Tensor:
         """
         Calculate the Jacobian matrix for the current configuration.
 
@@ -114,7 +181,7 @@ class StaticImplicitSolver(BaseSolver):
         # if load_names is None, compute for all loads
         if load_names is None:
             load_names = list(self.assembly._loads.keys())
-        
+
         # get the current load parameters as a single tensor
         total_params_list = []
         for load_name in load_names:
@@ -129,7 +196,9 @@ class StaticImplicitSolver(BaseSolver):
             for load_name in load_names:
                 load = self.assembly._loads[load_name]
                 param_len = load._parameters.numel()
-                load._parameters = total_params[index_now:index_now+param_len].reshape(load._parameters.shape)
+                load._parameters = total_params[
+                    index_now : index_now + param_len
+                ].reshape(load._parameters.shape)
                 index_now += param_len
             R = self.assembly.assemble_force(GC=result.GC.to(self.assembly.device))
 
@@ -139,10 +208,9 @@ class StaticImplicitSolver(BaseSolver):
                 load._parameters = load._parameters.detach()
 
             return R
-        
 
         from torch.autograd.functional import jvp
-        
+
         num_params = total_params.numel()
         if num_params > 0:
             Rdp_cols = []
@@ -152,38 +220,51 @@ class StaticImplicitSolver(BaseSolver):
                 # This computes the i-th column of the Jacobian
                 basis_vector_now = torch.zeros_like(total_params)
                 basis_vector_now[i] = 1.0
-                _, col = jvp(closure_R, total_params, v=basis_vector_now, create_graph=False)
+                _, col = jvp(
+                    closure_R, total_params, v=basis_vector_now, create_graph=False
+                )
                 Rdp_cols.append(col)
-            
+
             Rdp = torch.stack(Rdp_cols, dim=1)
         else:
             # Handle case with no parameters
             R_dummy = closure_R(total_params)
-            Rdp = torch.zeros((R_dummy.shape[0], 0), device=total_params.device, dtype=total_params.dtype)
-
+            Rdp = torch.zeros(
+                (R_dummy.shape[0], 0),
+                device=total_params.device,
+                dtype=total_params.dtype,
+            )
 
         if result.if_factorized is False:
             result.factorize_stiffness_matrix(assembly=self.assembly)
-        
+
         jacobian = -result.K_solver.solve(result.K_sp, Rdp.cpu().numpy())
-        jacobian = jacobian.reshape(-1, num_params) # Shape: (num_dofs, num_load_params)
+        jacobian = jacobian.reshape(
+            -1, num_params
+        )  # Shape: (num_dofs, num_load_params)
 
         jacobian_output = {}
         index_now = 0
         for load_name in load_names:
             load = self.assembly._loads[load_name]
             param_len = load._parameters.numel()
-            jacobian_output[load_name] = torch.from_numpy(jacobian[:, index_now:index_now+param_len]).to(result.GC.dtype).to(result.GC.device)
+            jacobian_output[load_name] = (
+                torch.from_numpy(jacobian[:, index_now : index_now + param_len])
+                .to(result.GC.dtype)
+                .to(result.GC.device)
+            )
             index_now += param_len
 
         return jacobian_output
-    
+
     def get_total_energy(self, GC_now: torch.Tensor) -> float:
-        
+
         potential_energy = self.assembly._total_Potential_Energy(GC=GC_now)
         return potential_energy
-    
-    def get_stiffness_matrix(self, GC_now: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+
+    def get_stiffness_matrix(
+        self, GC_now: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate the stiffness matrix for the current configuration.
 
@@ -194,8 +275,7 @@ class StaticImplicitSolver(BaseSolver):
             tuple[torch.Tensor, torch.Tensor]: Indices and values of the stiffness matrix.
         """
         R, K_indices, K_values = self.assembly.assemble_Stiffness_Matrix(GC=GC_now)
-        return R,K_indices, K_values
-
+        return R, K_indices, K_values
 
     # region sensitivity analysis
     def get_sensitivity(
@@ -203,7 +283,7 @@ class StaticImplicitSolver(BaseSolver):
         fe_result: StaticResult,
         design_vars: torch.Tensor,
         apply_func: Callable[[Assembly, torch.Tensor], None],
-        compute_objective_func: Callable[[StaticResult, Assembly], torch.Tensor]
+        compute_objective_func: Callable[[StaticResult, Assembly], torch.Tensor],
     ) -> torch.Tensor:
         """
         Core functional implementation of the adjoint sensitivity analysis.
@@ -217,12 +297,12 @@ class StaticImplicitSolver(BaseSolver):
             assembly (Assembly): The Finite Element Assembly object containing parts, elements, loads, etc.
             design_vars (torch.Tensor): A tensor representing the design variables.
                 It must be the source of gradients for `apply_func`.
-            apply_func (Callable[[Assembly, torch.Tensor], None]): 
+            apply_func (Callable[[Assembly, torch.Tensor], None]):
                 A callback to apply design variables to the assembly.
                 - Signature: `def apply_func(assembly: Assembly, design_vars: torch.Tensor) -> None`
                 - Behavior: Modify `assembly` in-place using `design_vars`. Operations must be traceable
                 by Autograd (e.g., `part.nodes = original_nodes + design_vars.reshape_as(part.nodes)`).
-            compute_objective_func (Callable[[StaticResult, Assembly], torch.Tensor]): 
+            compute_objective_func (Callable[[StaticResult, Assembly], torch.Tensor]):
                 A callback to compute the objective scalar.
                 - Signature: `def compute_objective_func(fe_result: StaticResult, assembly: Assembly) -> torch.Tensor`
                 - Args: `fe_result` contains the necessary solution data.
@@ -257,8 +337,10 @@ class StaticImplicitSolver(BaseSolver):
 
             # 6. Adjoint Equation Solve (K * lambda = - d_Obj/d_U)
             if GC_grad.grad is None:
-                raise RuntimeError("Objective function must depend on the displacement GC.")
-                
+                raise RuntimeError(
+                    "Objective function must depend on the displacement GC."
+                )
+
             LdU = GC_grad.grad.clone().detach()
             W = fe_result.K_solver.solve(fe_result.K_sp, -LdU.cpu().numpy())
             W_tensor = torch.tensor(W, dtype=GC_grad.dtype, device=GC_grad.device)
@@ -267,25 +349,24 @@ class StaticImplicitSolver(BaseSolver):
             R = self.assembly.assemble_force(GC=fe_result.GC)
             work = torch.dot(W_tensor, R)
             work.backward()
-            
+
             if design_vars_grad.grad is None:
                 return torch.zeros_like(design_vars)
-        
+
         finally:
             # Cleanup: Detach all tensors in assembly to prevent graph explosion in next run
             self._detach_recursive(self.assembly)
             self._detach_recursive(fe_result)
             fe_result.remove_stored_factorization()
 
-
         return design_vars_grad.grad.clone().detach()
-    
+
     def get_jacobian_sensitivity(
         self,
         fe_result: StaticResult,
         design_vars: torch.Tensor,
         load_names: list[str],
-        apply_func: Callable[[Assembly, torch.Tensor], None] ,
+        apply_func: Callable[[Assembly, torch.Tensor], None],
         compute_objective_func: Callable[[StaticResult, Assembly], torch.Tensor],
     ) -> torch.Tensor:
         """
@@ -299,12 +380,12 @@ class StaticImplicitSolver(BaseSolver):
             design_vars (torch.Tensor): A tensor representing the design variables.
                 It must be the source of gradients for `apply_func`.
             load_names (list[str]): The names of the loads for which to compute the Jacobian sensitivity.
-            apply_func (Callable[[Assembly, torch.Tensor, None]): 
+            apply_func (Callable[[Assembly, torch.Tensor, None]):
                 A callback to apply design variables to the assembly.
                 - Signature: `def apply_func(assembly: Assembly, design_vars: torch.Tensor) -> None`
                 - Behavior: Modify `assembly` in-place using `design_vars`. Operations must be traceable
                 by Autograd (e.g., `part.nodes = original_nodes + design_vars.reshape_as(part.nodes)`).
-            compute_objective_func (Callable[[StaticResult, Assembly], torch.Tensor]): 
+            compute_objective_func (Callable[[StaticResult, Assembly], torch.Tensor]):
                 A callback to compute the objective scalar.
                 - Signature: `def compute_objective_func(fe_result: StaticResult, assembly: Assembly) -> torch.Tensor`
                 - Args: `fe_result` contains the necessary solution data.
@@ -313,21 +394,23 @@ class StaticImplicitSolver(BaseSolver):
             torch.Tensor: The sensitivity of the objective with respect to design variables.
                 Shape matches `design_vars`.
         """
-        objfuncs = lambda fe_results, assembly: compute_objective_func(fe_results[0], assembly)
+        objfuncs = lambda fe_results, assembly: compute_objective_func(
+            fe_results[0], assembly
+        )
         return self.get_jacobian_sensitivity_multistep(
             fe_results=[fe_result],
             design_vars=design_vars,
             load_names=load_names,
             apply_func=apply_func,
             compute_objective_funcs=objfuncs,
-            )
+        )
 
-    def get_jacobian_sensitivity_multistep(        
+    def get_jacobian_sensitivity_multistep(
         self,
         fe_results: list[StaticResult],
         design_vars: torch.Tensor,
         load_names: list[str],
-        apply_func: Callable[[Assembly, torch.Tensor], None] ,
+        apply_func: Callable[[Assembly, torch.Tensor], None],
         compute_objective_funcs: Callable[[list[StaticResult], Assembly], torch.Tensor],
     ) -> torch.Tensor:
         """
@@ -341,12 +424,12 @@ class StaticImplicitSolver(BaseSolver):
             design_vars (torch.Tensor): A tensor representing the design variables.
                 It must be the source of gradients for `apply_func`.
             load_names (list[str]): The names of the loads for which to compute the Jacobian sensitivity.
-            apply_func (Callable[[Assembly, torch.Tensor, None]): 
+            apply_func (Callable[[Assembly, torch.Tensor, None]):
                 A callback to apply design variables to the assembly.
                 - Signature: `def apply_func(assembly: Assembly, design_vars: torch.Tensor) -> None`
                 - Behavior: Modify `assembly` in-place using `design_vars`. Operations must be traceable
                 by Autograd (e.g., `part.nodes = original_nodes + design_vars.reshape_as(part.nodes)`).
-            compute_objective_funcs (Callable[[list[StaticResult], Assembly], torch.Tensor]): 
+            compute_objective_funcs (Callable[[list[StaticResult], Assembly], torch.Tensor]):
                 A callback to compute the objective scalar.
                 - Signature: `def compute_objective_func(fe_results: list[StaticResult], assembly: Assembly) -> torch.Tensor`
                 - Args: `fe_results` contains the necessary solution data.
@@ -372,12 +455,17 @@ class StaticImplicitSolver(BaseSolver):
                 # 2. Prepare Jacobian
                 if fe_result.jacobian.keys() >= set(load_names):
                     jacobian_dict = fe_result.jacobian
-                else:                
-                    jacobian_dict = self.get_jacobian(result=fe_result, load_names=load_names)
+                else:
+                    jacobian_dict = self.get_jacobian(
+                        result=fe_result, load_names=load_names
+                    )
 
                 # 3. Prepare Autograd graph
                 GC_grad = fe_result.GC.clone().detach().requires_grad_(True)
-                jacobian_grad = {k: v.detach().clone().requires_grad_(True) for k, v in jacobian_dict.items()}
+                jacobian_grad = {
+                    k: v.detach().clone().requires_grad_(True)
+                    for k, v in jacobian_dict.items()
+                }
 
                 fe_result.GC = GC_grad  # Use GC_grad for the assembly to track gradients through R and K
                 fe_result.jacobian = jacobian_grad  # Use jacobian_grad to track gradients through the Jacobian
@@ -393,14 +481,21 @@ class StaticImplicitSolver(BaseSolver):
             for idx, fe_result in enumerate(fe_results):
                 # Each step must use its own load state when assembling R, dR/dp and dK/dp.
                 self.assembly.set_work_conditions(fe_result.work_conditions)
-                
+
                 # 6. Get R for the current step
                 R_grad = self.assembly.assemble_force(GC=fe_result.GC)
 
                 if len(load_names) > 0:
-                    jacobian = torch.cat([fe_result.jacobian[load_name] for load_name in load_names], dim=1).detach()
+                    jacobian = torch.cat(
+                        [fe_result.jacobian[load_name] for load_name in load_names],
+                        dim=1,
+                    ).detach()
                 else:
-                    jacobian = torch.zeros((fe_result.GC.numel(), 0), device=fe_result.GC.device, dtype=fe_result.GC.dtype)
+                    jacobian = torch.zeros(
+                        (fe_result.GC.numel(), 0),
+                        device=fe_result.GC.device,
+                        dtype=fe_result.GC.dtype,
+                    )
 
                 # 7. Compute Ldx and Ldy for the adjoint solve
                 if fe_result.GC.grad is None:
@@ -409,14 +504,27 @@ class StaticImplicitSolver(BaseSolver):
                     Ldx = fe_result.GC.grad.clone().detach()
 
                 if len(load_names) > 0:
-                    Ldy_dict = {k: v.grad.clone().detach() if v.grad is not None else torch.zeros_like(v) for k, v in fe_result.jacobian.items()}
-                    Ldy = torch.cat([Ldy_dict[load_name] for load_name in load_names], dim=1).detach() # Shape: (num_dofs, num_load_params)
+                    Ldy_dict = {
+                        k: v.grad.clone().detach()
+                        if v.grad is not None
+                        else torch.zeros_like(v)
+                        for k, v in fe_result.jacobian.items()
+                    }
+                    Ldy = torch.cat(
+                        [Ldy_dict[load_name] for load_name in load_names], dim=1
+                    ).detach()  # Shape: (num_dofs, num_load_params)
                 else:
-                    Ldy = torch.zeros((fe_result.GC.numel(), 0), device=fe_result.GC.device, dtype=fe_result.GC.dtype)
+                    Ldy = torch.zeros(
+                        (fe_result.GC.numel(), 0),
+                        device=fe_result.GC.device,
+                        dtype=fe_result.GC.dtype,
+                    )
 
                 # 8. sensitivity for GC
                 W0 = -fe_result.K_solver.solve(fe_result.K_sp, Ldx.cpu().numpy())
-                W0_tensor = torch.tensor(W0, dtype=fe_result.GC.dtype, device=fe_result.GC.device)
+                W0_tensor = torch.tensor(
+                    W0, dtype=fe_result.GC.dtype, device=fe_result.GC.device
+                )
 
                 # 9. For each parameter, compute the Jacobian sensitivity using the chain rule:
 
@@ -429,10 +537,14 @@ class StaticImplicitSolver(BaseSolver):
                 if len(total_load_params_list) > 0:
                     total_load_params = torch.cat(total_load_params_list, dim=0)
                 else:
-                    total_load_params = torch.zeros((0,), device=fe_result.GC.device, dtype=fe_result.GC.dtype)
+                    total_load_params = torch.zeros(
+                        (0,), device=fe_result.GC.device, dtype=fe_result.GC.dtype
+                    )
                 num_load_params = total_load_params.numel()
 
-                obj_part_y = torch.zeros(1, device=fe_result.GC.device, dtype=fe_result.GC.dtype)
+                obj_part_y = torch.zeros(
+                    1, device=fe_result.GC.device, dtype=fe_result.GC.dtype
+                )
                 K_indices = self.assembly.assemble_Stiffness_Matrix(GC=fe_result.GC)[1]
                 wKdp = torch.zeros_like(fe_result.GC)
                 for para_idx in range(num_load_params):
@@ -441,12 +553,16 @@ class StaticImplicitSolver(BaseSolver):
                     if Ldy_now.abs().sum() < 1e-8:
                         continue
 
-
                     W1 = fe_result.K_solver.solve(fe_result.K_sp, Ldy_now.cpu().numpy())
-                    W1_tensor = torch.tensor(W1, dtype=fe_result.GC.dtype, device=fe_result.GC.device)
+                    W1_tensor = torch.tensor(
+                        W1, dtype=fe_result.GC.dtype, device=fe_result.GC.device
+                    )
+
                     ### evaluate the stiffness matrix sensitivity dK/dPara using autograd
                     def get_Kdp(load_now: torch.Tensor):
-                        GC_now = fe_result.GC + jacobian[:, para_idx].detach() * (load_now - load_now.detach())
+                        GC_now = fe_result.GC + jacobian[:, para_idx].detach() * (
+                            load_now - load_now.detach()
+                        )
                         index_now = 0
                         for load_name in load_names:
                             load = self.assembly._loads[load_name]
@@ -458,15 +574,24 @@ class StaticImplicitSolver(BaseSolver):
                             index_now += param_len
                         K_values = self.assembly.assemble_Stiffness_Matrix(GC=GC_now)[2]
                         return K_values
-                    Kdp_values = torch.autograd.functional.jvp(
-                        get_Kdp, total_load_params[para_idx: para_idx+1], torch.ones([1]), create_graph=False)[1]
-                    Kdp = torch.sparse_coo_tensor(K_indices, Kdp_values, size=fe_result.K_sp.shape)
 
-                    wKdp += Kdp@ W1_tensor
+                    Kdp_values = torch.autograd.functional.jvp(
+                        get_Kdp,
+                        total_load_params[para_idx : para_idx + 1],
+                        torch.ones([1]),
+                        create_graph=False,
+                    )[1]
+                    Kdp = torch.sparse_coo_tensor(
+                        K_indices, Kdp_values, size=fe_result.K_sp.shape
+                    )
+
+                    wKdp += Kdp @ W1_tensor
 
                     ### evaluate the stiffness matrix sensitivity dR/dPara using autograd
                     def get_Rdp(load_now: torch.Tensor):
-                        GC_now = fe_result.GC + jacobian[:, para_idx].detach() * (load_now - load_now.detach())
+                        GC_now = fe_result.GC + jacobian[:, para_idx].detach() * (
+                            load_now - load_now.detach()
+                        )
                         index_now = 0
                         for load_name in load_names:
                             load = self.assembly._loads[load_name]
@@ -479,14 +604,22 @@ class StaticImplicitSolver(BaseSolver):
                         R = self.assembly.assemble_force(GC=GC_now)
                         return (R * W1_tensor).sum()
 
-                    obj_part_y -= torch.autograd.functional.jacobian(get_Rdp, total_load_params[para_idx: para_idx+1], create_graph=True)
+                    obj_part_y -= torch.autograd.functional.jacobian(
+                        get_Rdp,
+                        total_load_params[para_idx : para_idx + 1],
+                        create_graph=True,
+                    )
 
                 if wKdp.abs().sum() > 1e-8:
-                    wKdpKinv = fe_result.K_solver.solve(fe_result.K_sp, wKdp.cpu().numpy())
+                    wKdpKinv = fe_result.K_solver.solve(
+                        fe_result.K_sp, wKdp.cpu().numpy()
+                    )
                 else:
                     wKdpKinv = torch.zeros_like(wKdp)
-                wKdpKinv_tensor = torch.tensor(wKdpKinv, dtype=fe_result.GC.dtype, device=fe_result.GC.device)
-                
+                wKdpKinv_tensor = torch.tensor(
+                    wKdpKinv, dtype=fe_result.GC.dtype, device=fe_result.GC.device
+                )
+
                 obj_part_x = ((W0_tensor + wKdpKinv_tensor) * R_grad).sum()
 
                 obj_total = obj_part_x + obj_part_y
@@ -499,12 +632,11 @@ class StaticImplicitSolver(BaseSolver):
                 fe_result.remove_stored_factorization()
                 self._detach_recursive(fe_result)
 
-                logger.info(f" -Step {idx+1}/{len(fe_results)} sensitivity computed.")
+                logger.info(f" -Step {idx + 1}/{len(fe_results)} sensitivity computed.")
 
-                
             sensitivity = design_vars_grad.grad.clone().detach()
 
-        finally:            
+        finally:
             # Cleanup: Detach all tensors in assembly to prevent graph explosion in next run
             self._detach_recursive(self.assembly)
 
@@ -513,7 +645,7 @@ class StaticImplicitSolver(BaseSolver):
         return sensitivity
 
     @classmethod
-    def _detach_recursive(cls, obj: object, visited: set=None):
+    def _detach_recursive(cls, obj: object, visited: set = None):
         """
         Recursively detach tensors to clean up the computation graph.
         For mutable containers (list, dict, objects), replaces tensors with detached versions.
@@ -521,7 +653,7 @@ class StaticImplicitSolver(BaseSolver):
         """
         if visited is None:
             visited = set()
-        
+
         obj_id = id(obj)
         if obj_id in visited:
             return
@@ -542,10 +674,11 @@ class StaticImplicitSolver(BaseSolver):
         elif isinstance(obj, tuple):
             for v in obj:
                 cls._detach_recursive(v, visited)
-        elif hasattr(obj, '__dict__'):
+        elif hasattr(obj, "__dict__"):
             # Iterate over a copy of items to avoid modification issues
             for k, v in list(obj.__dict__.items()):
-                if k.startswith('__'): continue 
+                if k.startswith("__"):
+                    continue
                 if isinstance(v, torch.Tensor):
                     setattr(obj, k, v.detach())
                 else:
@@ -553,16 +686,126 @@ class StaticImplicitSolver(BaseSolver):
 
     # endregion
 
-
     # region solve iteration
-    def _line_search(self,
-                     GC0: torch.Tensor,
-                     dGC: torch.Tensor,
-                     R: torch.Tensor,
-                     energy0: float, *args, **kwargs):
+    def _set_continuation_factor(self, factor: float) -> None:
+        """Set the factor used by continuous loads for the next assembly."""
+        factor = float(factor)
+        for load in self.assembly._loads.values():
+            if isinstance(load, ContinuousLoad):
+                load.continuation_factor = factor
+
+    def _solve_with_cutback(
+        self,
+        GC: torch.Tensor,
+        tol_error: float,
+    ):
+        """Solve load increments and retry failed increments with cutback.
+
+        The Newton solve itself remains in :meth:`_solve_iteration`.  This
+        outer loop only changes the continuation factor, stores the last
+        accepted reduced coordinates, and retries from that state after a
+        failed increment.  Loads without ``ContinuousLoad`` in their MRO are
+        unaffected and always remain at their full value.
+        """
+        t00 = time.time()
+        GC_accepted = GC.detach().clone()
+        accepted_factor = 0.0
+        increment = min(self.initial_increment, self.maximum_increment)
+        cutback_count = 0
+        last_accepted_time_items: dict[str, list[float]] = {
+            "assemble": [],
+            "linear": [],
+            "line_search": [],
+            "step": [],
+        }
+
+        # A fresh solve starts a continuation path from zero.  With the
+        # default increment of one this is exactly the historical one-step
+        # solve, while a smaller initial increment activates continuation.
+        self._set_continuation_factor(accepted_factor)
+
+        while accepted_factor < 1.0 - 1e-14:
+            trial_increment = min(increment, 1.0 - accepted_factor)
+            trial_factor = accepted_factor + trial_increment
+            self._set_continuation_factor(trial_factor)
+
+            try:
+                (
+                    GC_trial,
+                    _trial_total_time,
+                    trial_items,
+                    trial_converged,
+                ) = self._solve_iteration(GC=GC_accepted, tol_error=tol_error)
+                failure = not trial_converged
+            except (RuntimeError, ValueError, FloatingPointError) as exc:
+                logger.warning(
+                    "load increment %.6g failed with %s: %s",
+                    trial_factor,
+                    type(exc).__name__,
+                    exc,
+                )
+                GC_trial = GC_accepted
+                trial_items = {key: [] for key in last_accepted_time_items}
+                failure = True
+
+            if not failure:
+                GC_accepted = GC_trial.detach().clone()
+                accepted_factor = trial_factor
+                last_accepted_time_items = trial_items
+                increment = min(
+                    self.maximum_increment,
+                    trial_increment * self.growth_factor,
+                )
+                continue
+
+            # The failed trial is discarded.  Reapply the last accepted
+            # factor before deciding whether another, smaller trial is safe.
+            self._set_continuation_factor(accepted_factor)
+            cutback_count += 1
+
+            if (
+                cutback_count >= self.maximum_cutbacks
+                or trial_increment <= self.minimum_increment * (1.0 + 1e-12)
+            ):
+                logger.warning(
+                    "static solve stopped at load factor %.6g after %d cutbacks",
+                    accepted_factor,
+                    cutback_count,
+                )
+                return (
+                    GC_accepted,
+                    time.time() - t00,
+                    last_accepted_time_items,
+                    False,
+                    accepted_factor,
+                )
+
+            increment = max(
+                self.minimum_increment,
+                trial_increment * self.cutback_factor,
+            )
+
+        self._set_continuation_factor(accepted_factor)
+        return (
+            GC_accepted,
+            time.time() - t00,
+            last_accepted_time_items,
+            True,
+            accepted_factor,
+        )
+
+    def _line_search(
+        self,
+        GC0: torch.Tensor,
+        dGC: torch.Tensor,
+        R: torch.Tensor,
+        energy0: float,
+        *args,
+        **kwargs,
+    ):
         # line search
         alpha = 1.0
-        beta = float('inf')
+        beta = float("inf")
         c1 = 0.3
         c2 = 0.4
         dGC0 = dGC.clone()
@@ -571,10 +814,10 @@ class StaticImplicitSolver(BaseSolver):
         if deltaE > 0:
             dGC = -dGC
             deltaE = -deltaE
-            logger.warning('the newton dirction is not the decrease direction')
+            logger.warning("the newton dirction is not the decrease direction")
 
         if torch.isnan(dGC).sum() > 0 or torch.isinf(dGC).sum() > 0:
-            raise ValueError('dGC has nan or inf')
+            raise ValueError("dGC has nan or inf")
             dGC = -R
             deltaE = (dGC * R).sum()
 
@@ -585,13 +828,14 @@ class StaticImplicitSolver(BaseSolver):
         while True:
             GCnew = GC0 + alpha * dGC
             # GCnew.requires_grad_()
-            energy_new = self.get_total_energy(
-                GC_now=GCnew)
+            energy_new = self.get_total_energy(GC_now=GCnew)
 
-            if torch.isnan(energy_new) or torch.isinf(
-                    energy_new) or \
-                energy_new > energy0 + c1 * deltaE * alpha or \
-                (alpha * dGC).abs().max() > self._maximum_step_length:
+            if (
+                torch.isnan(energy_new)
+                or torch.isinf(energy_new)
+                or energy_new > energy0 + c1 * deltaE * alpha
+                or (alpha * dGC).abs().max() > self._maximum_step_length
+            ):
                 alpha = 0.5 * alpha
                 if alpha < 1e-12:
                     alpha = 0.0
@@ -604,13 +848,11 @@ class StaticImplicitSolver(BaseSolver):
 
         return alpha, GCnew.detach(), energy_new.detach()
 
-    def _solve_iteration(self,
-                         GC: torch.Tensor,
-                         tol_error: float):
+    def _solve_iteration(self, GC: torch.Tensor, tol_error: float):
 
         # record the information of the solver
         total_time = 0.0
-        time_items = {'assemble': [], 'linear': [], 'line_search': [], 'step': []}
+        time_items = {"assemble": [], "linear": [], "line_search": [], "step": []}
 
         # iteration now
         self._iter_now = 0
@@ -619,9 +861,7 @@ class StaticImplicitSolver(BaseSolver):
         t00 = time.time()
 
         # initialize the energy
-        energy = [
-            self.get_total_energy(GC_now=GC)
-        ]
+        energy = [self.get_total_energy(GC_now=GC)]
 
         dGC = torch.zeros_like(GC)
 
@@ -633,50 +873,43 @@ class StaticImplicitSolver(BaseSolver):
 
         # begin the iteration
         while True:
-
             if self._iter_now > self.maximum_iteration:
-                logger.warning('maximum iteration reached')
+                logger.warning("maximum iteration reached")
                 return GC, time.time() - t00, time_items, False
 
             # calculate the force vector and tangential stiffness matrix
             t1 = time.time()
             R, K_indices, K_values = self.get_stiffness_matrix(GC_now=GC)
 
-            a=torch.cuda.memory_reserved()
-
-
             self._iter_now += 1
 
             # evaluate the newton direction
             t2 = time.time()
-            dGC = self._solve_linear_equation(K_indices=K_indices,
-                                              K_values=K_values,
-                                              R=-R,
-                                              iter_now=self._iter_now,
-                                              alpha0=alpha,
-                                              tol_error=tol_error,
-                                              dGC0=dGC).flatten()
-
-
-
+            dGC = self._solve_linear_equation(
+                K_indices=K_indices,
+                K_values=K_values,
+                R=-R,
+                iter_now=self._iter_now,
+                alpha0=alpha,
+                tol_error=tol_error,
+                dGC0=dGC,
+            ).flatten()
 
             # line search
             t3 = time.time()
-            alpha, GCnew, energynew = self._line_search(
-                    GC, dGC, R, energy[-1])
+            alpha, GCnew, energynew = self._line_search(GC, dGC, R, energy[-1])
 
-            if alpha==0 and R.abs().max() > tol_error:
+            if alpha == 0 and R.abs().max() > tol_error:
                 return GC, time.time() - t00, time_items, False
-            if alpha==0:
+            if alpha == 0:
                 break
 
             # if convergence has difficulty, reduce the load percentage
-            if alpha < 0.01:
+            if alpha < 0.1:
                 low_alpha += 1
             else:
                 low_alpha -= 5
-                if low_alpha < 0:
-                    low_alpha = 0
+                low_alpha = max(low_alpha, 0)
 
             if low_alpha > 10:
                 return GC, time.time() - t00, time_items, False
@@ -687,65 +920,83 @@ class StaticImplicitSolver(BaseSolver):
             # self.show_surface(nodes=self.nodes+RGC[0])
 
             # update the energy
-            energynew = self.get_total_energy(
-                GC_now=GC)
+            energynew = self.get_total_energy(GC_now=GC)
             energy.append(energynew)
 
             t4 = time.time()
 
             # return the index to the first line
             if self._iter_now > 1:
-                print('\033[1A', end='')
-                print('\033[1A', end='')
-                print('\033[K', end='')
+                print("\033[1A", end="")
+                print("\033[1A", end="")
+                print("\033[K", end="")
 
-            print(  "{:^8}".format("iter") + \
-                    "{:^8}".format("alpha") + \
-                    "{:^8}".format("total") + \
-                    "{:^15}".format("energy") + \
-                    "{:^15}".format("delta_energy") + \
-                    "{:^15}".format("error") + \
-                    "{:^10}".format("Ktime") + \
-                    "{:^10}".format("linear") + \
-                    "{:^10}".format("search") + \
-                    "{:^10}".format("step"))
+            print(
+                "{:^8}".format("iter")
+                + "{:^8}".format("alpha")
+                + "{:^8}".format("total")
+                + "{:^15}".format("energy")
+                + "{:^15}".format("delta_energy")
+                + "{:^15}".format("error")
+                + "{:^10}".format("Ktime")
+                + "{:^10}".format("linear")
+                + "{:^10}".format("search")
+                + "{:^10}".format("step")
+            )
 
-            print(  "{:^8}".format(self._iter_now) + \
-                    "{:^8.2f}".format(alpha) + \
-                    "{:^8.2f}".format(t4 - t00) + \
-                    "{:^15.4e}".format(energy[-1]) + \
-                    "{:^15.4e}".format(energy[-1] - energy[-2]) + \
-                    "{:^15.4e}".format(R.abs().max()) + \
-                    "{:^10.2f}".format(t2 - t1) + \
-                    "{:^10.2f}".format(t3 - t2) + \
-                    "{:^10.2f}".format(t4 - t3) + \
-                    "{:^10.2f}".format(t4 - t1))
-            
-            time_items['assemble'].append(t2 - t1)
-            time_items['linear'].append(t3 - t2)
-            time_items['line_search'].append(t4 - t3)
-            time_items['step'].append(t4 - t1)
+            print(
+                f"{self._iter_now:^8}"
+                + f"{alpha:^8.2f}"
+                + f"{t4 - t00:^8.2f}"
+                + f"{energy[-1]:^15.4e}"
+                + f"{energy[-1] - energy[-2]:^15.4e}"
+                + f"{R.abs().max():^15.4e}"
+                + f"{t2 - t1:^10.2f}"
+                + f"{t3 - t2:^10.2f}"
+                + f"{t4 - t3:^10.2f}"
+                + f"{t4 - t1:^10.2f}"
+            )
 
-            logger.debug('iter:%d, alpha:%.2f, total_time:%.2f, energy:%.4e, delta_energy:%.4e, error:%.4e, Ktime:%.2f, linear:%.2f, search:%.2f, step:%.2f' % (
-                self._iter_now, alpha, t4 - t00, energy[-1], energy[-1] - energy[-2], R.abs().max(), t2 - t1, t3 - t2, t4 - t3, t4 - t1))
-            
-            if (dGC.abs().max() < tol_error and R.abs().max() < tol_error) or R.abs().max() < 1e-6:
+            time_items["assemble"].append(t2 - t1)
+            time_items["linear"].append(t3 - t2)
+            time_items["line_search"].append(t4 - t3)
+            time_items["step"].append(t4 - t1)
+
+            logger.debug(
+                "iter:%d, alpha:%.2f, total_time:%.2f, energy:%.4e, delta_energy:%.4e, error:%.4e, Ktime:%.2f, linear:%.2f, search:%.2f, step:%.2f"
+                % (
+                    self._iter_now,
+                    alpha,
+                    t4 - t00,
+                    energy[-1],
+                    energy[-1] - energy[-2],
+                    R.abs().max(),
+                    t2 - t1,
+                    t3 - t2,
+                    t4 - t3,
+                    t4 - t1,
+                )
+            )
+
+            if (
+                dGC.abs().max() < tol_error and R.abs().max() < tol_error
+            ) or R.abs().max() < 1e-6:
                 break
 
-        
         total_time = time.time() - t00
 
         return GC, total_time, time_items, True
-    
 
-    def _solve_linear_equation(self,
-                               K_indices: torch.Tensor,
-                               K_values: torch.Tensor,
-                               R: torch.Tensor,
-                               iter_now: int = 0,
-                               alpha0: float = None,
-                               dGC0: torch.Tensor = None,
-                               tol_error=1e-8):
+    def _solve_linear_equation(
+        self,
+        K_indices: torch.Tensor,
+        K_values: torch.Tensor,
+        R: torch.Tensor,
+        iter_now: int = 0,
+        alpha0: float = None,
+        dGC0: torch.Tensor = None,
+        tol_error=1e-8,
+    ):
         if dGC0 is None:
             dGC0 = torch.zeros_like(R)
 
@@ -757,15 +1008,20 @@ class StaticImplicitSolver(BaseSolver):
             raise ValueError(
                 "Reduced stiffness matrix and residual have different dimensions: "
                 f"matrix={matrix_size}, residual={R.numel()}. "
-                "Check active constraints and boundary conditions.")
+                "Check active constraints and boundary conditions."
+            )
 
         # result = torch.sparse.spsolve(torch.sparse_coo_tensor(K_indices, K_values, [R.shape[0], R.shape[0]]).to_sparse_csr(), R)
 
         # precondition for the linear equation
         index = torch.where(K_indices[0] == K_indices[1])[0]
-        diag = torch.zeros_like(R).scatter_add(0, K_indices[0, index],
-                                               K_values[index]).abs().sqrt()
-        diag[diag==0] = 1.0  # Avoid division by zero
+        diag = (
+            torch.zeros_like(R)
+            .scatter_add(0, K_indices[0, index], K_values[index])
+            .abs()
+            .sqrt()
+        )
+        diag[diag == 0] = 1.0  # Avoid division by zero
         K_values_preconditioned = K_values / diag[K_indices[0]]
         K_values_preconditioned = K_values_preconditioned / diag[K_indices[1]]
         R_preconditioned = R / diag
@@ -777,26 +1033,36 @@ class StaticImplicitSolver(BaseSolver):
         else:
             self.__low_alpha_count = 0
 
-        if self.__low_alpha_count > 5 or R_preconditioned.abs().max() < 1e-2 or K_values_preconditioned.device.type == 'cpu':
-            dx = _linear_solver.pypardiso_solver(A_indices=K_indices,
-                                                 A_values=K_values_preconditioned,
-                                                 b=R_preconditioned)
+        if (
+            self.__low_alpha_count > 5
+            or R_preconditioned.abs().max() < 1e-2
+            or K_values_preconditioned.device.type == "cpu"
+        ):
+            dx = _linear_solver.pypardiso_solver(
+                A_indices=K_indices,
+                A_values=K_values_preconditioned,
+                b=R_preconditioned,
+            )
             self.__low_alpha_count = 0
         else:
             if self.__low_alpha_count > 0:
-                dx = _linear_solver.conjugate_gradient(K_indices,
-                                                       K_values_preconditioned,
-                                                       R_preconditioned,
-                                                       x0,
-                                                       tol=1e-5,
-                                                       max_iter=3000)
+                dx = _linear_solver.conjugate_gradient(
+                    K_indices,
+                    K_values_preconditioned,
+                    R_preconditioned,
+                    x0,
+                    tol=1e-5,
+                    max_iter=3000,
+                )
             else:
-                dx = _linear_solver.conjugate_gradient(K_indices,
-                                                       K_values_preconditioned,
-                                                       R_preconditioned,
-                                                       x0,
-                                                       tol=1e-3,
-                                                       max_iter=1200)
+                dx = _linear_solver.conjugate_gradient(
+                    K_indices,
+                    K_values_preconditioned,
+                    R_preconditioned,
+                    x0,
+                    tol=1e-3,
+                    max_iter=1200,
+                )
         result = dx.to(R.dtype) / diag
         return result
 

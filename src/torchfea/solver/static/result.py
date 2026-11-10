@@ -6,25 +6,31 @@ import pypardiso
 
 if TYPE_CHECKING:
     from ... import Assembly
-    
-from ...model.assembly import WorkCondition
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
+from ...model.assembly import WorkCondition
 from ..baseresult import BaseResult
-import scipy.sparse as sp
+
 
 class StaticResult(BaseResult):
     """
     The result of a static finite element analysis (FEA) simulation.
     """
 
-    def __init__(self, GC: torch.Tensor, work_conditions: WorkCondition,
-                 jacobian: dict[str, torch.Tensor] = None, total_time: float = 0.0,
-                 time_items: dict[str, list[float]] = None, converged: bool = True,
-                 model_hash: str | None = None,
-                 compatibility_hash: str | None = None):
+    def __init__(
+        self,
+        GC: torch.Tensor,
+        work_conditions: WorkCondition,
+        jacobian: dict[str, torch.Tensor] = None,
+        total_time: float = 0.0,
+        time_items: dict[str, list[float]] = None,
+        converged: bool = True,
+        model_hash: str | None = None,
+        compatibility_hash: str | None = None,
+    ):
         super().__init__()
         self.GC = GC.detach().clone()
         """ 
@@ -73,14 +79,16 @@ class StaticResult(BaseResult):
         self.total_time: float = total_time
         """Total time taken for the simulation"""
 
-        self.time_items: dict[str, list[float]] = time_items if time_items is not None else {}
+        self.time_items: dict[str, list[float]] = (
+            time_items if time_items is not None else {}
+        )
         """Dictionary to store time taken for different items in the simulation"""
 
     def __getstate__(self):
         """Exclude non-pickle-able objects (K_solver/K_sp) from serialized state."""
         state = self.__dict__.copy()
-        state.pop('K_solver', None)
-        state.pop('K_sp', None)
+        state.pop("K_solver", None)
+        state.pop("K_sp", None)
         return state
 
     def __setstate__(self, state):
@@ -89,7 +97,7 @@ class StaticResult(BaseResult):
         self.K_solver = None
         self.K_sp = None
 
-    def factorize_stiffness_matrix(self, assembly: 'Assembly'):
+    def factorize_stiffness_matrix(self, assembly: Assembly):
         """
         Factorize the stiffness matrix using the Pardiso solver.
 
@@ -99,7 +107,12 @@ class StaticResult(BaseResult):
         """
         assembly.set_work_conditions(self.work_conditions)
         K_indices, K_values = assembly.assemble_Stiffness_Matrix(GC=self.GC)[1:]
-        K_sp = sp.coo_matrix((K_values.detach().cpu().numpy(), (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())))
+        K_sp = sp.coo_matrix(
+            (
+                K_values.detach().cpu().numpy(),
+                (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy()),
+            )
+        )
         self.K_sp = K_sp.tocsr()
         self.K_solver = pypardiso.PyPardisoSolver()
         self.K_solver.factorize(self.K_sp)
@@ -115,6 +128,7 @@ class StaticResult(BaseResult):
             self.K_sp = None
             self.if_factorized = False
             import gc
+
             gc.collect()
 
     def save(self, path: str):
@@ -140,9 +154,9 @@ class StaticResult(BaseResult):
         if self.compatibility_hash:
             archive["compatibility_hash"] = self.compatibility_hash
         np.savez_compressed(file=path, **archive)
-    
+
     @classmethod
-    def load(cls, path: str) -> "StaticResult":
+    def load(cls, path: str) -> StaticResult:
         """
         Load the static FEA result from a file.
 
@@ -150,22 +164,30 @@ class StaticResult(BaseResult):
             path (str): The path to the file from which the result will be loaded.
         """
         with np.load(path, allow_pickle=True) as data:
-            GC = torch.tensor(data['GC'])
-            total_time = float(data['total_time'])
-            time_items = data['time_items'].item()
-            converged = bool(np.asarray(data['converged']).reshape(-1)[0])
-            model_hash = str(np.asarray(data['model_hash']).reshape(-1)[0])
+            GC = torch.tensor(data["GC"])
+            total_time = float(data["total_time"])
+            time_items = data["time_items"].item()
+            converged = bool(np.asarray(data["converged"]).reshape(-1)[0])
+            model_hash = str(np.asarray(data["model_hash"]).reshape(-1)[0])
             compatibility_hash = (
-                str(np.asarray(data['compatibility_hash']).reshape(-1)[0])
-                if 'compatibility_hash' in data.files else None
+                str(np.asarray(data["compatibility_hash"]).reshape(-1)[0])
+                if "compatibility_hash" in data.files
+                else None
             )
-            serialized_work_conditions = data['work_conditions'].item()
+            serialized_work_conditions = data["work_conditions"].item()
 
         work_conditions = (
             WorkCondition._deserialize(serialized_work_conditions)
-            if serialized_work_conditions is not None else None
+            if serialized_work_conditions is not None
+            else None
         )
 
-        return cls(GC=GC, work_conditions=work_conditions, total_time=total_time,
-                   time_items=time_items, converged=converged, model_hash=model_hash,
-                   compatibility_hash=compatibility_hash)
+        return cls(
+            GC=GC,
+            work_conditions=work_conditions,
+            total_time=total_time,
+            time_items=time_items,
+            converged=converged,
+            model_hash=model_hash,
+            compatibility_hash=compatibility_hash,
+        )

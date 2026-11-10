@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .base import BaseLoad
+from .base import ContinuousLoad
 
 
-class Penalty_DoF(BaseLoad):
+class Penalty_DoF(ContinuousLoad):
     """
     Penalize one DoF in one object's RGC segment to track a target value using quadratic penalty energy.
 
@@ -18,7 +18,7 @@ class Penalty_DoF(BaseLoad):
         obj_type: one of {'auto', 'instance', 'rp', 'load', 'constraint'}
     """
 
-    _serialized_attributes = ['obj_name', 's', 'target', 'k', '_parameters', 'obj_type']
+    _serialized_attributes = ["obj_name", "s", "target", "k", "_parameters", "obj_type"]
 
     def __init__(
         self,
@@ -43,8 +43,6 @@ class Penalty_DoF(BaseLoad):
         self._rgc_local_flat_index: int | None = None
         self._global_s: int | None = None
 
-
-
     @property
     def k(self) -> torch.Tensor:
         return self._parameters[0]
@@ -66,7 +64,9 @@ class Penalty_DoF(BaseLoad):
         rgc_idx = obj._RGC_index
 
         if rgc_idx is None:
-            raise ValueError(f"Object '{self.obj_name}' does not have a valid _RGC_index.")
+            raise ValueError(
+                f"Object '{self.obj_name}' does not have a valid _RGC_index."
+            )
 
         seg_size = int(np.prod(self._assembly._RGC_size[rgc_idx]))
         if self.s < 0 or self.s >= seg_size:
@@ -85,7 +85,9 @@ class Penalty_DoF(BaseLoad):
         self._rgc_local_flat_index = local_flat
         self._global_s = global_s
 
-        self._indices_force = torch.tensor([self._global_s], dtype=torch.int64, device=assembly.device)
+        self._indices_force = torch.tensor(
+            [self._global_s], dtype=torch.int64, device=assembly.device
+        )
 
     def _get_params_like(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         k = self.k.to(device=ref.device, dtype=ref.dtype)
@@ -95,7 +97,7 @@ class Penalty_DoF(BaseLoad):
     def _get_s_now(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         return RGC[self._rgc_list_index].reshape(-1)[self._rgc_local_flat_index]
 
-    def get_stiffness(
+    def _get_stiffness(
         self,
         RGC: list[torch.Tensor],
         if_onlyforce: bool = False,
@@ -118,7 +120,7 @@ class Penalty_DoF(BaseLoad):
         K_values = (-k).reshape(1)
         return F_indices, F_values, K_indices, K_values
 
-    def get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
+    def _get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         s_now = self._get_s_now(RGC)
         k, target = self._get_params_like(s_now)
         # Negative sign so Assembly._total_Potential_Energy adds penalty energy.
