@@ -2,6 +2,7 @@ from io import TextIOWrapper
 from typing import TextIO
 import numpy as np
 from threading import Thread
+from .utils import Rotation
 
 class FEA_INP():
 
@@ -568,25 +569,9 @@ class FEA_INP():
                                 # 将角度转换为弧度
                                 angle_rad = np.radians(angle_deg)
                                 
-                                # 使用Rodrigues旋转公式构建旋转矩阵
-                                cos_theta = np.cos(angle_rad)
-                                sin_theta = np.sin(angle_rad)
-                                one_minus_cos = 1 - cos_theta
-                                
-                                ux, uy, uz = axis_vector
-                                
-                                # 构建旋转矩阵
-                                rotation_matrix = np.array([
-                                    [cos_theta + ux*ux*one_minus_cos, 
-                                    ux*uy*one_minus_cos - uz*sin_theta, 
-                                    ux*uz*one_minus_cos + uy*sin_theta],
-                                    [uy*ux*one_minus_cos + uz*sin_theta, 
-                                    cos_theta + uy*uy*one_minus_cos, 
-                                    uy*uz*one_minus_cos - ux*sin_theta],
-                                    [uz*ux*one_minus_cos - uy*sin_theta, 
-                                    uz*uy*one_minus_cos + ux*sin_theta, 
-                                    cos_theta + uz*uz*one_minus_cos]
-                                ])
+                                rotation_matrix = Rotation.from_rotvec(
+                                    axis_vector * angle_rad
+                                ).as_matrix().cpu().numpy()
                                 
                                 # 将旋转矩阵嵌入到4x4变换矩阵中
                                 transform[:3, :3] = rotation_matrix
@@ -731,61 +716,14 @@ class FEA_INP():
                             f.write(f"{translation[0]}, {translation[1]}, {translation[2]}\n")
                         
                         elif has_rotation:
-                            # Extract rotation axis and angle from rotation matrix
-                            # Using Rodrigues formula in reverse
-                            trace = np.trace(rotation_matrix)
-                            angle_rad = np.arccos(np.clip((trace - 1) / 2, -1, 1))
+                            rotvec = Rotation.from_matrix(rotation_matrix).as_rotvec().cpu().numpy()
+                            angle_rad = np.linalg.norm(rotvec)
+                            axis = rotvec / angle_rad
                             angle_deg = np.degrees(angle_rad)
-                            
-                            if np.abs(angle_rad) < 1e-8:
-                                # No rotation (identity matrix)
-                                if has_translation:
-                                    f.write(f"{translation[0]}, {translation[1]}, {translation[2]}\n")
-                            elif np.abs(angle_rad - np.pi) < 1e-8:
-                                # 180 degree rotation - special case
-                                # Find the eigenvector corresponding to eigenvalue 1
-                                eigenvals, eigenvecs = np.linalg.eig(rotation_matrix)
-                                axis_idx = np.argmin(np.abs(eigenvals - 1))
-                                axis = eigenvecs[:, axis_idx].real
-                                axis = axis / np.linalg.norm(axis)
-                                
-                                # Choose a point on the rotation axis (origin for simplicity)
-                                axis_start = np.array([0.0, 0.0, 0.0])
-                                axis_end = axis_start + axis
-                                
-                                if has_translation:
-                                    f.write(f"{translation[0]}, {translation[1]}, {translation[2]}\n")
-                                f.write(f"{axis_start[0]}, {axis_start[1]}, {axis_start[2]}, "
-                                       f"{axis_end[0]}, {axis_end[1]}, {axis_end[2]}, {angle_deg}\n")
-                            else:
-                                # General rotation
-                                # Extract rotation axis
-                                axis = np.array([
-                                    rotation_matrix[2, 1] - rotation_matrix[1, 2],
-                                    rotation_matrix[0, 2] - rotation_matrix[2, 0],
-                                    rotation_matrix[1, 0] - rotation_matrix[0, 1]
-                                ]) / (2 * np.sin(angle_rad))
-                                
-                                axis = axis / np.linalg.norm(axis)  # Normalize
-                                
-                                # For writing, we need to specify two points on the rotation axis
-                                # We'll use origin as start point and axis direction as end point
-                                axis_start = np.array([0.0, 0.0, 0.0])
-                                axis_end = axis_start + axis
-                                
-                                # If there's translation, write it first
-                                if has_translation:
-                                    # For combined translation and rotation, we need to account for
-                                    # the fact that rotation happens first, then translation
-                                    # But in INP format, translation is applied to the original position
-                                    # So we write the final translation
-                                    f.write(f"{translation[0]}, {translation[1]}, {translation[2]}\n")
-                                
-                                # Write rotation: axis_start_x, axis_start_y, axis_start_z, 
-                                #                 axis_end_x, axis_end_y, axis_end_z, angle_degrees
-                                f.write(f"{axis_start[0]}, {axis_start[1]}, {axis_start[2]}, "
-                                       f"{axis_end[0]}, {axis_end[1]}, {axis_end[2]}, {angle_deg}\n")
-                    
+                            # A translation line must precede a rotation line, including zero translation.
+                            f.write(f"{translation[0]}, {translation[1]}, {translation[2]}\n")
+                            f.write(f"0.0, 0.0, 0.0, {axis[0]}, {axis[1]}, {axis[2]}, {angle_deg}\n")
+
                     f.write("*End Instance\n")
                     f.write("**\n")
             

@@ -69,7 +69,7 @@ $$
 x_i = x_i^0 + u_i = x_{rp}^0 + v + R(\theta)r_i.
 $$
 
-代码中的 `_rotation3d()` 使用 Rodrigues 公式计算 $R(\theta)r_i$。
+代码通过 `Rotation.from_rotvec(theta).apply(r_i)` 计算 $R(\theta)r_i$。
 
 ### 2.2 自由度处理
 
@@ -106,6 +106,10 @@ $$
 
 1. 节点原有切线通过运动学雅可比映射到参考点；
 2. 残差与运动学二阶导数形成几何刚度项。
+
+`modify_R_K()` 直接处理普通的 COO 索引和值张量，不构造 PyTorch 稀疏矩阵。节点内部的刚度条目直接累加到参考点的 `6×6` 块；与节点集外部的交叉项通过雅可比映射；将被消元的节点行、列不再生成额外条目。节点查找表只缓存静态整数索引，其余计算保留 `RGC`、节点初始偏置、`R0` 和 `K_values` 的计算图，支持一阶与二阶自动微分。
+
+新旧实现的数值、梯度与运行时间可用 `PYTHONPATH=src python benchmarks/benchmark_couple.py` 对照。计时包含建立计算图的前向，以及同一约化目标函数的前向加反向；使用 CPU 单线程、float64，结果取中位数。
 
 ### 2.4 使用方式
 
@@ -218,10 +222,11 @@ $$
 其中：
 
 - `skew_symmetric()` 构造叉乘矩阵 $[\cdot]_\times$；
-- `rotation_matrix_from_vector()` 使用矩阵指数计算旋转矩阵；
-- `rotation_vector_from_matrix()` 将旋转矩阵转换回旋转向量。
+- `Rotation.from_rotvec(...).as_matrix()` 将旋转向量转换为旋转矩阵；
+- `Rotation.from_matrix(...).as_rotvec()` 将旋转矩阵转换回旋转向量；
+- `Rotation.matrix_derivatives(z)` 显式计算旋转矩阵对旋转向量的一阶、二阶导数，供 `Couple` 和罚函数关节共用。
 
-这些通用运算位于 `torchfea/utils/maths.py`，并保持 PyTorch 自动微分计算图。
+这些通用运算统一位于 `torchfea/utils/rotation.py`，导数采用向量化解析公式。
 
 ### 3.3 连接点几何关系
 

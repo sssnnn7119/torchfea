@@ -437,6 +437,39 @@ $$K_{ss} = \frac{\partial f_s}{\partial u_s} = -k$$
 
 这是一种**软约束**方式——$k$ 越大，约束越"硬"，但过大的 $k$ 会导致刚度矩阵病态。选择 $k$ 时需要权衡约束精度和数值稳定性。
 
+### 7.4 参考点关节
+
+`SingleDoFJoint` 和 `SphericalJoint` 与 `Penalty_DoF` 一样通过 `assembly.add_load` 添加。两侧参考点各有三个位移和三个旋转向量自由度；`connection_point` 是初始构型中的**全局坐标**，可与两个参考点的位置不同。关节位置随各自参考点的刚体运动更新。
+
+构造参数类型：`rp_name1`、`rp_name2` 为 `str`；`connection_point` 为长度 3 的浮点序列、`numpy.ndarray` 或 `torch.Tensor`；`free_direction` 为长度 6 的同类向量；`k` 为正 `float`。数值参数统一保存在 `torch.float64` 的 `_parameters` 中：球铰为 `[k, x, y, z]`，单自由度关节为 `[k, x, y, z, tx, ty, tz, rx, ry, rz]`。`connection_point` 和 `free_direction` 属性是该张量对应的视图。
+
+```python
+from torchfea.model.loads import SingleDoFJoint, SphericalJoint
+
+# 绕初始全局 z 轴转动的单自由度铰；其余五个相对运动分量受罚。
+assembly.add_load(
+    SingleDoFJoint(
+        rp_name1="body_a_rp",
+        rp_name2="body_b_rp",
+        connection_point=[0.4, 0.0, 0.0],
+        free_direction=[0, 0, 0, 0, 0, 1],
+        k=1e7,
+    ),
+    name="hinge",
+)
+
+# 沿初始全局 x 轴平移的单自由度滑块：free_direction=[1, 0, 0, 0, 0, 0]
+# 球铰：关节位置的三方向相对平移受罚，三个相对转动均自由。
+assembly.add_load(
+    SphericalJoint("body_a_rp", "body_b_rp", [0.4, 0.0, 0.0], k=1e7),
+    name="ball_joint",
+)
+```
+
+`free_direction` 的六个分量依次为 `[tx, ty, tz, rx, ry, rz]`，必须为非零向量。平移量使用模型长度单位，转角使用弧度；若混合平移与转动分量，其数值比例定义了螺旋运动的导程。相对运动及自由方向均在第一个参考点的初始局部坐标系中定义，因此第一个参考点转动后，自由方向会随其转动。罚能为受限相对运动的二次型；`k` 太大同样可能使系统病态。有限转动的相对旋转采用主值表示，在 180° 附近存在表示分支。
+
+关节向装配器返回残余力与切线刚度的全局索引及数值；切线刚度使用 COO 稀疏条目表示，零条目不会加入装配。关节显式计算运动学的一阶、二阶导数，再用链式法则组装罚能的梯度与 Hessian，不调用自动微分。切线与残余力在装配器中的符号分别为罚能的二阶导数和一阶导数。
+
 ---
 
 ## 8. Contact — 接触

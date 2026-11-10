@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .i18n import T
+from ..utils import Rotation
 from .model import (
     BoundaryDefinition, CAEProject, ConstraintDefinition, GeometryDefinition,
     InstanceDefinition, LoadDefinition, MaterialDefinition, NamedSet, PartDefinition,
@@ -2563,15 +2564,7 @@ class Workbench(QWidget):
     def _transform_points(points, translation, rotation):
         coordinates = np.asarray(points, dtype=float)
         rotation_vector = np.asarray(rotation, dtype=float)
-        angle = np.linalg.norm(rotation_vector)
-        if angle > 1e-12:
-            axis = rotation_vector / angle
-            cross = np.array([[0., -axis[2], axis[1]], [axis[2], 0., -axis[0]], [-axis[1], axis[0], 0.]])
-            rotation_matrix = (
-                np.eye(3) * np.cos(angle)
-                + (1 - np.cos(angle)) * np.outer(axis, axis)
-                + np.sin(angle) * cross)
-            coordinates = coordinates @ rotation_matrix.T
+        coordinates = Rotation.from_rotvec(rotation_vector).apply(coordinates).cpu().numpy()
         return coordinates + np.asarray(translation, dtype=float)
 
     def _save_global_mesh_size(self):
