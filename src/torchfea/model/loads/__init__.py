@@ -6,3 +6,4 @@ from .base import BaseLoad
 from .body_force import BodyForce
 from .spring import Spring_RP_RP, Spring_RP_Point
 from .penalty_dof import Penalty_DoF
+from .joint import SingleDoFJoint, SphericalJoint

@@ -19,6 +19,18 @@ torch.set_default_dtype(torch.float64)
 
 所有几何、材料、载荷和密度必须使用同一单位制。例如若长度用 mm、力用 N，则压力是 N/mm²，密度应是质量/mm³，时间单位也必须与此一致。
 
+旋转表示可通过 `torchfea.utils.Rotation` 统一转换。四元数顺序为 `[w, x, y, z]`；欧拉角采用 XYZ 顺序，主动旋转矩阵为 `Rz(yaw) @ Ry(pitch) @ Rx(roll)`，默认单位为弧度。类内部保存归一化四元数；旋转向量输出为主值（转角不超过 π）。
+
+```python
+from torchfea.utils import Rotation
+
+rotation = Rotation.from_euler([0.0, 0.0, 90.0], degrees=True)
+matrix = rotation.as_matrix()
+quaternion = rotation.as_quaternion()
+rotation_vector = rotation.as_rotvec()
+euler_degrees = rotation.as_euler(degrees=True)
+```
+
 ## 2. 构建模型
 
 ### 2.1 从 INP 读取

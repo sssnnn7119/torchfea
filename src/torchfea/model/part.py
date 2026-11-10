@@ -1,6 +1,6 @@
 from __future__ import annotations
-import re
-from typing import Optional, TYPE_CHECKING
+
+from typing import TYPE_CHECKING
 
 from .elements import Element_3D
 
@@ -8,19 +8,22 @@ if TYPE_CHECKING:
     from .. import Assembly
 
 import numpy as np
-import torch
-from . import elements
-from .obj_base import BaseObj
-from .elements import BaseSurface, BaseElement, surfaces
-from ..interfaces import Serializable
 import pyvista as pv
+import torch
+
+from ..interfaces import Serializable
+from ..utils import Rotation
+from . import elements
+from .elements import BaseElement, BaseSurface, surfaces
+from .obj_base import BaseObj
+
 
 class _Surfaces(Serializable):
     """
     Class representing a set of surfaces in the finite element model.
     """
 
-    _serialized_attributes_exclude = ['_surface_elements', '_initialized']
+    _serialized_attributes_exclude = ["_surface_elements", "_initialized"]
 
     def __init__(self):
         self._surface_dict: dict[str, list[tuple[np.ndarray, int]]] = {}
@@ -52,7 +55,7 @@ class _Surfaces(Serializable):
             list[BaseSurface]: The list of surface elements.
         """
         return self._surface_elements.get(name, [])
-    
+
     def get_trimesh(self, name: str) -> torch.Tensor:
         """
         Get the triangles of a surface set by name.
@@ -66,7 +69,7 @@ class _Surfaces(Serializable):
         surface_elements = self.get_elements(name)
         if len(surface_elements) == 0:
             raise ValueError(f"Surface set '{name}' not found in the model.")
-        
+
         triangles = []
         for se in surface_elements:
             triangles.append(se.trimesh)
@@ -94,8 +97,6 @@ class _Surfaces(Serializable):
         """
         self._surface_dict[key] = value
 
-
-
     def __contains__(self, key: str):
         """
         Check if a surface exists by its name.
@@ -119,14 +120,15 @@ class _Surfaces(Serializable):
 
 
 class Part(Serializable):
-
     _serialized_attributes_exclude = [
-        'mass_matrix_indices', 'mass_matrix_values', 'mid_pt_idxmap_torch',
-        '_gmsh_surface_sets', '_gmsh_surface_nodes',
-        '_gmsh_volume_elements', '_gmsh_vertex_nodes',
+        "mass_matrix_indices",
+        "mass_matrix_values",
+        "mid_pt_idxmap_torch",
+        "_gmsh_surface_sets",
+        "_gmsh_surface_nodes",
+        "_gmsh_volume_elements",
+        "_gmsh_vertex_nodes",
     ]
-
-
 
     def __init__(self, nodes: torch.Tensor) -> None:
 
@@ -190,9 +192,9 @@ class Part(Serializable):
         """
         if name is None:
             number = len(self.elems)
-            while ('element-%d' % number) in self.elems:
+            while ("element-%d" % number) in self.elems:
                 number += 1
-            name = 'element-%d' % number
+            name = "element-%d" % number
         self.elems[name] = element
         return name
 
@@ -226,7 +228,7 @@ class Part(Serializable):
             node_indices = node_indices.cpu().numpy()
         self.set_nodes[name] = node_indices
         return name
-    
+
     def delete_node_set(self, name: str):
         """
         Delete a node set from the part.
@@ -256,32 +258,36 @@ class Part(Serializable):
         if name not in self.set_elements:
             raise ValueError(f"Element set '{name}' not found in the model.")
         del self.set_elements[name]
-        
 
     def add_surface_set(self, name: str, elements: list[tuple[np.ndarray, int]]):
         """
         Add a surface set to the FEA model.
-        
+
         Args:
             name (str): Name of the surface set.
             elements (list[tuple[np.ndarray, int]]): A list of tuples, where each tuple contains an array of element indices and a surface index.
-            
+
         Returns:
             str: Name of the added surface set.
         """
-        if name == getattr(self, "exterior_surface", "extern") and name in self.surfaces:
+        if (
+            name == getattr(self, "exterior_surface", "extern")
+            and name in self.surfaces
+        ):
             raise ValueError(f"Part exterior surface '{name}' cannot be overwritten.")
         self.surfaces[name] = elements
-        self.surfaces._initialized = False  # Mark surfaces as not initialized since we added new surface data
+        self.surfaces._initialized = (
+            False  # Mark surfaces as not initialized since we added new surface data
+        )
         return name
-    
+
     def delete_surface_set(self, name: str):
         """
         Delete a surface set from the FEA model.
-        
+
         Args:
             name (str): Name of the surface set to delete.
-            
+
         Raises:
             KeyError: If the surface set doesn't exist.
         """
@@ -291,24 +297,26 @@ class Part(Serializable):
             del self.surfaces[name]
         else:
             raise KeyError(f"Surface set '{name}' not found in the model.")
-        
+
     def refine_RGC(self, RGC: torch.Tensor) -> torch.Tensor:
         RGC_out = RGC
         for e in self.elems.values():
             RGC_out = e.refine_RGC(RGC_out, self.nodes)
         return RGC_out
 
-    def merge_elements(self, element_name_list: list[str], element_name_new: str) -> None:
+    def merge_elements(
+        self, element_name_list: list[str], element_name_new: str
+    ) -> None:
         """
         Merge multiple elements into a single new element.
-        
+
         Args:
             element_name_list (list[str]): List of element names to merge.
             element_name_new (str): Name for the new merged element.
-            
+
         Returns:
             str: Name of the merged element.
-            
+
         Raises:
             ValueError: If elements are of different types or if any element name is not found.
         """
@@ -317,18 +325,20 @@ class Part(Serializable):
             self.add_element(elems0, name=element_name_new)
             self.delete_element(element_name_list[0])
             return
-            
+
         # Check if all elements exist
         for name in element_name_list:
             if name not in self.elems:
                 raise ValueError(f"Element '{name}' not found in the model")
-            
+
         # Check if all elements are of the same type
         element_type = self.elems[element_name_list[0]].__class__.__name__
         for name in element_name_list[1:]:
             if self.elems[name].__class__.__name__ != element_type:
-                raise ValueError(f"Cannot merge elements of different types: {type(self.elems[name])} and {element_type}")
-        
+                raise ValueError(
+                    f"Cannot merge elements of different types: {type(self.elems[name])} and {element_type}"
+                )
+
         # Create a new element of the same type
         merged_elems = []
         merged_index = []
@@ -337,26 +347,35 @@ class Part(Serializable):
             merged_index.append(self.elems[name]._elems_index)
         merged_elems = torch.cat(merged_elems, dim=0)
         merged_index = torch.cat(merged_index, dim=0)
-        merged_element = elements.initialize_element(element_type=element_type, elems_index=merged_index, elems=merged_elems, nodes=self.nodes)
-        
-        
+        merged_element = elements.initialize_element(
+            element_type=element_type,
+            elems_index=merged_index,
+            elems=merged_elems,
+            nodes=self.nodes,
+        )
+
         # Add merged element to the model
         self.add_element(merged_element, name=element_name_new)
-        
+
         # Clean up the original elements if needed
         for name in element_name_list:
             self.delete_element(name)
-            
+
         return
 
-    def convert_linear_to_quadratic_elements(self, element_name_list: list[str], new_element_name_list: list[str], if_update_setnodes = True):
+    def convert_linear_to_quadratic_elements(
+        self,
+        element_name_list: list[str],
+        new_element_name_list: list[str],
+        if_update_setnodes=True,
+    ):
         """
         Convert selected linear elements into quadratic elements.
 
         Args:
             element_name_list (list[str]): Names of the existing linear elements.
             new_element_name_list (list[str]): Names for the new quadratic elements.
-            
+
 
         This method replaces each old element in-place by a new quadratic element:
         1. Extract all unique edges from the selected linear elements.
@@ -365,16 +384,18 @@ class Part(Serializable):
         4. Preserve density and material definitions.
         """
         if len(element_name_list) != len(new_element_name_list):
-            raise ValueError('element_name_list and new_element_name_list must have the same length.')
+            raise ValueError(
+                "element_name_list and new_element_name_list must have the same length."
+            )
 
         if len(set(new_element_name_list)) != len(new_element_name_list):
-            raise ValueError('new_element_name_list contains duplicate names.')
+            raise ValueError("new_element_name_list contains duplicate names.")
 
         supported_conversion = {
-            'C3D4': 'C3D10',
-            'C3D6': 'C3D15',
-            'C3D8': 'C3D20',
-            'C3D8R': 'C3D20',
+            "C3D4": "C3D10",
+            "C3D6": "C3D15",
+            "C3D8": "C3D20",
+            "C3D8R": "C3D20",
         }
 
         selected: list[tuple[str, str, BaseElement]] = []
@@ -384,7 +405,9 @@ class Part(Serializable):
             if old_name not in self.elems:
                 raise ValueError(f"Element '{old_name}' not found in the model.")
             if new_name in reserved_new_names and new_name != old_name:
-                raise ValueError(f"New element name '{new_name}' already exists in the model.")
+                raise ValueError(
+                    f"New element name '{new_name}' already exists in the model."
+                )
 
             element = self.elems[old_name]
             old_type = element.__class__.__name__
@@ -405,12 +428,16 @@ class Part(Serializable):
         # extract all edges
         edges_all = []
         for _, _, element in selected:
-            linear_edges_idx = self._get_linear_edges_for_element_type(element.__class__.__name__)
+            linear_edges_idx = self._get_linear_edges_for_element_type(
+                element.__class__.__name__
+            )
             elems = element._elems
             linear_edges = elems[:, linear_edges_idx].cpu().numpy()
             edges_all.append(linear_edges.reshape(-1, 2))
         edges_all = np.concatenate(edges_all, axis=0)
-        edges_all = np.sort(edges_all, axis=1)  # sort node indices in each edge to avoid duplicates like (1,2) and (2,1)
+        edges_all = np.sort(
+            edges_all, axis=1
+        )  # sort node indices in each edge to avoid duplicates like (1,2) and (2,1)
         large_number = edges_all.max() + 1
         edge_hash = edges_all[:, 0] * large_number + edges_all[:, 1]
         _, unique_indices = np.unique(edge_hash, return_index=True)
@@ -419,7 +446,9 @@ class Part(Serializable):
         # create the mapping from edge to midpoint node index
         for i, (n1, n2) in enumerate(unique_edges):
             edge_to_mid_index[(n1.item(), n2.item())] = node_count + i
-            edge_to_mid_index[(n2.item(), n1.item())] = node_count + i  # add both directions for easy lookup
+            edge_to_mid_index[(n2.item(), n1.item())] = (
+                node_count + i
+            )  # add both directions for easy lookup
 
         # create mid nodes for unique edges
         new_node_tensor = self.nodes[unique_edges].mean(dim=1)
@@ -428,7 +457,9 @@ class Part(Serializable):
         for old_name, new_name, element in selected:
             old_type = element.__class__.__name__
             new_type = supported_conversion[old_type]
-            new_connectivity = self._build_quadratic_connectivity(old_type, element._elems, edge_to_mid_index)
+            new_connectivity = self._build_quadratic_connectivity(
+                old_type, element._elems, edge_to_mid_index
+            )
 
             new_element = elements.initialize_element(
                 element_type=new_type,
@@ -455,7 +486,10 @@ class Part(Serializable):
                 self.add_element(new_element, name=new_name)
 
         self.mid_pt_idxmap = edge_to_mid_index
-        self.mid_pt_idxmap_torch = torch.tensor([[n1, n2, mid_idx] for (n1, n2), mid_idx in edge_to_mid_index.items()], dtype=torch.long)
+        self.mid_pt_idxmap_torch = torch.tensor(
+            [[n1, n2, mid_idx] for (n1, n2), mid_idx in edge_to_mid_index.items()],
+            dtype=torch.long,
+        )
 
         if if_update_setnodes:
             for key in self.set_nodes.keys():
@@ -468,54 +502,134 @@ class Part(Serializable):
                 self.set_nodes[key] = np.sort(np.array(list(new_set_nodes)))
 
     def _get_linear_edges_for_element_type(self, element_type: str) -> list[list[int]]:
-        if element_type == 'C3D4':
+        if element_type == "C3D4":
             return [[0, 1], [1, 2], [0, 2], [0, 3], [1, 3], [2, 3]]
-        if element_type == 'C3D6':
-            return [[0, 1], [1, 2], [0, 2], [3, 4], [4, 5], [3, 5], [0, 3], [1, 4], [2, 5]]
-        if element_type in ['C3D8', 'C3D8R']:
-            return [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]
-        raise ValueError(f"Unsupported element type '{element_type}' for edge extraction.")
+        if element_type == "C3D6":
+            return [
+                [0, 1],
+                [1, 2],
+                [0, 2],
+                [3, 4],
+                [4, 5],
+                [3, 5],
+                [0, 3],
+                [1, 4],
+                [2, 5],
+            ]
+        if element_type in ["C3D8", "C3D8R"]:
+            return [
+                [0, 1],
+                [1, 2],
+                [2, 3],
+                [3, 0],
+                [4, 5],
+                [5, 6],
+                [6, 7],
+                [7, 4],
+                [0, 4],
+                [1, 5],
+                [2, 6],
+                [3, 7],
+            ]
+        raise ValueError(
+            f"Unsupported element type '{element_type}' for edge extraction."
+        )
 
-    def _build_quadratic_connectivity(self, element_type: str, elems: torch.Tensor, edge_to_mid_index: dict[tuple[int, int], int]) -> torch.Tensor:
+    def _build_quadratic_connectivity(
+        self,
+        element_type: str,
+        elems: torch.Tensor,
+        edge_to_mid_index: dict[tuple[int, int], int],
+    ) -> torch.Tensor:
         def mid(i: int, j: int) -> torch.Tensor:
             edge0 = elems[:, i].cpu().numpy()
             edge1 = elems[:, j].cpu().numpy()
-            mid_idx = torch.tensor([edge_to_mid_index[(n1, n2)] for n1, n2 in zip(edge0, edge1)], dtype=torch.long, device=elems.device)
+            mid_idx = torch.tensor(
+                [edge_to_mid_index[(n1, n2)] for n1, n2 in zip(edge0, edge1)],
+                dtype=torch.long,
+                device=elems.device,
+            )
             return mid_idx
 
-        if element_type == 'C3D4':
-            return torch.stack([
-                elems[:, 0], elems[:, 1], elems[:, 2], elems[:, 3],
-                mid(0, 1), mid(1, 2), mid(0, 2), mid(0, 3), mid(1, 3), mid(2, 3),
-            ], dim=1)
+        if element_type == "C3D4":
+            return torch.stack(
+                [
+                    elems[:, 0],
+                    elems[:, 1],
+                    elems[:, 2],
+                    elems[:, 3],
+                    mid(0, 1),
+                    mid(1, 2),
+                    mid(0, 2),
+                    mid(0, 3),
+                    mid(1, 3),
+                    mid(2, 3),
+                ],
+                dim=1,
+            )
 
-        if element_type == 'C3D6':
-            return torch.stack([
-                elems[:, 0], elems[:, 1], elems[:, 2], elems[:, 3], elems[:, 4], elems[:, 5],
-                mid(0, 1), mid(1, 2), mid(0, 2), mid(3, 4), mid(4, 5), mid(3, 5),
-                mid(0, 3), mid(1, 4), mid(2, 5),
-            ], dim=1)
+        if element_type == "C3D6":
+            return torch.stack(
+                [
+                    elems[:, 0],
+                    elems[:, 1],
+                    elems[:, 2],
+                    elems[:, 3],
+                    elems[:, 4],
+                    elems[:, 5],
+                    mid(0, 1),
+                    mid(1, 2),
+                    mid(0, 2),
+                    mid(3, 4),
+                    mid(4, 5),
+                    mid(3, 5),
+                    mid(0, 3),
+                    mid(1, 4),
+                    mid(2, 5),
+                ],
+                dim=1,
+            )
 
-        if element_type in ['C3D8', 'C3D8R']:
-            return torch.stack([
-                elems[:, 0], elems[:, 1], elems[:, 2], elems[:, 3],
-                elems[:, 4], elems[:, 5], elems[:, 6], elems[:, 7],
-                mid(0, 1), mid(1, 2), mid(2, 3), mid(3, 0),
-                mid(4, 5), mid(5, 6), mid(6, 7), mid(7, 4),
-                mid(0, 4), mid(1, 5), mid(2, 6), mid(3, 7),
-            ], dim=1)
+        if element_type in ["C3D8", "C3D8R"]:
+            return torch.stack(
+                [
+                    elems[:, 0],
+                    elems[:, 1],
+                    elems[:, 2],
+                    elems[:, 3],
+                    elems[:, 4],
+                    elems[:, 5],
+                    elems[:, 6],
+                    elems[:, 7],
+                    mid(0, 1),
+                    mid(1, 2),
+                    mid(2, 3),
+                    mid(3, 0),
+                    mid(4, 5),
+                    mid(5, 6),
+                    mid(6, 7),
+                    mid(7, 4),
+                    mid(0, 4),
+                    mid(1, 5),
+                    mid(2, 6),
+                    mid(3, 7),
+                ],
+                dim=1,
+            )
 
-        raise ValueError(f"Unsupported element type '{element_type}' for quadratic connectivity.")
+        raise ValueError(
+            f"Unsupported element type '{element_type}' for quadratic connectivity."
+        )
 
     def extract_surfaces(self, name: str) -> list[BaseSurface]:
-        """        Get the triangles of a surface set by name.  
-        
+        """Get the triangles of a surface set by name.
+
         Args:
             name (str): Name of the surface set.
-            
+
         Returns:
             list[BaseSurface]: List of triangles in the surface set.
-            
+
         Raises:
             ValueError: If the surface set is not found.
         """
@@ -531,7 +645,7 @@ class Part(Serializable):
         else:
             return surfaces.merge_surfaces(surface)
 
-    def export_inp(self, file_path: str, part_name: str = 'Part-1') -> None:
+    def export_inp(self, file_path: str, part_name: str = "Part-1") -> None:
         """
         Export the part to an Abaqus INP file.
 
@@ -542,15 +656,15 @@ class Part(Serializable):
         - element sets from self.set_elements
         - surfaces from self.surfaces
         """
-        with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
-            f.write('** Generated by torchfea Part.export_inp\n')
-            f.write(f'*Part, name={part_name}\n')
+        with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("** Generated by torchfea Part.export_inp\n")
+            f.write(f"*Part, name={part_name}\n")
 
             # Write nodes
-            f.write('*Node\n')
+            f.write("*Node\n")
             for node_id, node in enumerate(self.nodes, start=1):
                 coords = node.tolist()
-                f.write(f'{node_id}, {coords[0]}, {coords[1]}, {coords[2]}\n')
+                f.write(f"{node_id}, {coords[0]}, {coords[1]}, {coords[2]}\n")
 
             # Write elements grouped by Abaqus element type
             elements_by_type: dict[str, list[BaseElement]] = {}
@@ -559,39 +673,50 @@ class Part(Serializable):
                 elements_by_type.setdefault(elem_type, []).append(element)
 
             for elem_type, element_list in elements_by_type.items():
-                f.write(f'*Element, type={elem_type}\n')
+                f.write(f"*Element, type={elem_type}\n")
                 for element in element_list:
                     connectivity = element._elems
                     element_ids = element._elems_index
                     for elem_row, elem_id in zip(connectivity, element_ids):
-                        node_ids = [str(int(node_id.item()) + 1) for node_id in elem_row]
-                        f.write(f'{int(elem_id.item()) + 1}, ' + ', '.join(node_ids) + '\n')
+                        node_ids = [
+                            str(int(node_id.item()) + 1) for node_id in elem_row
+                        ]
+                        f.write(
+                            f"{int(elem_id.item()) + 1}, " + ", ".join(node_ids) + "\n"
+                        )
 
             # Write node sets
             for set_name, node_list in self.set_nodes.items():
                 sorted_nodes = sorted(np.asarray(node_list, dtype=int).tolist())
                 if len(sorted_nodes) == 0:
                     continue
-                f.write(f'*Nset, nset={set_name}\n')
+                f.write(f"*Nset, nset={set_name}\n")
                 for i in range(0, len(sorted_nodes), 10):
-                    line_nodes = sorted_nodes[i:i + 10]
-                    f.write(', '.join(str(node_id + 1) for node_id in line_nodes) + '\n')
+                    line_nodes = sorted_nodes[i : i + 10]
+                    f.write(
+                        ", ".join(str(node_id + 1) for node_id in line_nodes) + "\n"
+                    )
 
             # Write surfaces
             for set_name, element_list in self.set_elements.items():
                 sorted_elements = sorted(np.asarray(element_list, dtype=int).tolist())
                 if not sorted_elements:
                     continue
-                f.write(f'*Elset, elset={set_name}\n')
+                f.write(f"*Elset, elset={set_name}\n")
                 for i in range(0, len(sorted_elements), 10):
-                    f.write(', '.join(str(element_id + 1)
-                                      for element_id in sorted_elements[i:i + 10]) + '\n')
+                    f.write(
+                        ", ".join(
+                            str(element_id + 1)
+                            for element_id in sorted_elements[i : i + 10]
+                        )
+                        + "\n"
+                    )
 
             for surface_name in self.surfaces.keys():
                 surface_items = self.surfaces[surface_name]
                 if len(surface_items) == 0:
                     continue
-                f.write(f'*Surface, type=ELEMENT, name={surface_name}\n')
+                f.write(f"*Surface, type=ELEMENT, name={surface_name}\n")
                 for elem_ids, surface_index in surface_items:
                     if isinstance(elem_ids, np.ndarray):
                         elem_ids_iter = elem_ids.ravel().tolist()
@@ -600,29 +725,34 @@ class Part(Serializable):
                     else:
                         elem_ids_iter = [int(elem_ids)]
                     for elem_id in elem_ids_iter:
-                        f.write(f'{int(elem_id) + 1}, S{int(surface_index) + 1}\n')
+                        f.write(f"{int(elem_id) + 1}, S{int(surface_index) + 1}\n")
 
-            f.write('*End Part\n')
+            f.write("*End Part\n")
 
     # endregion
 
     # region FEA
 
-    def potential_energy(self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None) -> torch.Tensor:
+    def potential_energy(
+        self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None
+    ) -> torch.Tensor:
         p = torch.tensor(0.0)
         for e in self.elems.values():
             p = p + e.potential_Energy(RGC, rotation_matrix=rotation_matrix)
         return p
 
-    def structural_stiffness(self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None) -> list[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        
+    def structural_stiffness(
+        self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None
+    ) -> list[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
         K_values = []
         K_indices = []
         R_values = []
         R_indices = []
         for e in self.elems.values():
             Ra_indice, Ra_values, Ka_indice, Ka_value = e.structural_Force(
-                RGC=RGC, rotation_matrix=rotation_matrix)
+                RGC=RGC, rotation_matrix=rotation_matrix
+            )
             K_values.append(Ka_value)
             K_indices.append(Ka_indice)
             R_values.append(Ra_values)
@@ -633,14 +763,17 @@ class Part(Serializable):
         R_indices = torch.cat(R_indices, dim=0)
         R_values = torch.cat(R_values, dim=0)
         return R_indices, R_values, K_indices, K_values
-    
-    def structural_force(self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None) -> list[torch.Tensor, torch.Tensor]:
-        
+
+    def structural_force(
+        self, RGC: torch.Tensor, rotation_matrix: torch.Tensor = None
+    ) -> list[torch.Tensor, torch.Tensor]:
+
         R_values = []
         R_indices = []
         for e in self.elems.values():
             Ra_indice, Ra_values = e.structural_Force(
-                RGC=RGC, rotation_matrix=rotation_matrix, if_onlyforce=True)
+                RGC=RGC, rotation_matrix=rotation_matrix, if_onlyforce=True
+            )
             R_values.append(Ra_values)
             R_indices.append(Ra_indice)
         R_indices = torch.cat(R_indices, dim=0)
@@ -670,13 +803,13 @@ class Part(Serializable):
         """
         Get the Part mesh for visualization.
         Args:
-            surf_name (str, optional): Name of the surface set to visualize. 
+            surf_name (str, optional): Name of the surface set to visualize.
                 If None, use the Part exterior surface. Defaults to None.
         Returns:
             pv.PolyData: The mesh of the Part.
         """
         import pyvista as pv
-        
+
         if surf_name is None:
             surf_name = getattr(self, "exterior_surface", "extern")
             triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
@@ -684,14 +817,24 @@ class Part(Serializable):
             triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
         nodes_transformed = self.nodes.cpu().numpy()
 
-        mesh = pv.PolyData(nodes_transformed, np.hstack([ np.full((triangles.shape[0], 1), 3), triangles ]))
+        mesh = pv.PolyData(
+            nodes_transformed,
+            np.hstack([np.full((triangles.shape[0], 1), 3), triangles]),
+        )
         return mesh
 
 
 class Instance(BaseObj):
+    _serialized_attributes_exclude = [
+        "part",
+    ]
 
-    _serialized_attributes_exclude = ['part', ]
-    def __init__(self, part_name: str, translation: list[float] = None, rotation: list[float] = None) -> None:
+    def __init__(
+        self,
+        part_name: str,
+        translation: list[float] = None,
+        rotation: list[float] = None,
+    ) -> None:
         """
         Create an instance of a part.
 
@@ -719,14 +862,11 @@ class Instance(BaseObj):
             self._rotation: torch.Tensor = torch.randn(3) * 0.0
             """the rotation vector of the instance defined in exponential map"""
 
-        theta = torch.norm(self._rotation)
-        if theta == 0:
-            self.rotation_matrix = None
-        else:
-            r = self._rotation / theta
-            r = r.view(3, 1)
-            R = torch.cos(theta) * torch.eye(3) + (1 - torch.cos(theta)) * (r @ r.t()) + torch.sin(theta) * torch.tensor([[0, -r[2, 0], r[1, 0]], [r[2, 0], 0, -r[0, 0]], [-r[1, 0], r[0, 0], 0]])
-            self.rotation_matrix = R
+        self.rotation_matrix = (
+            Rotation.from_rotvec(self._rotation).as_matrix()
+            if torch.any(self._rotation != 0)
+            else None
+        )
 
     @property
     def exterior_surface(self) -> str:
@@ -734,7 +874,8 @@ class Instance(BaseObj):
         if self.part is None:
             raise RuntimeError(
                 f"Instance '{self.part_name}' is not linked to a Part yet; "
-                "set the exterior surface on the Part before initialization.")
+                "set the exterior surface on the Part before initialization."
+            )
         return self.part.exterior_surface
 
     @exterior_surface.setter
@@ -743,18 +884,20 @@ class Instance(BaseObj):
         if self.part is None:
             raise RuntimeError(
                 f"Instance '{self.part_name}' is not linked to a Part yet; "
-                "set the exterior surface on the Part before initialization.")
+                "set the exterior surface on the Part before initialization."
+            )
         self.part.exterior_surface = str(name).strip()
-
 
     @property
     def elems(self) -> dict[str, BaseElement]:
         return self.part.elems
-    
+
     @property
     def nodes(self) -> torch.Tensor:
-        return self._transform(self.part.nodes, self._rotation) + self._translation.unsqueeze(0)
-    
+        return self._transform(
+            self.part.nodes, self._rotation
+        ) + self._translation.unsqueeze(0)
+
     @property
     def surfaces(self) -> _Surfaces:
         return self.part.surfaces
@@ -774,29 +917,21 @@ class Instance(BaseObj):
         vector0 = vector0.view(-1, 3)
         if rotation_vector is None:
             return vector0
-        
-        theta = torch.norm(rotation_vector)
-        if theta == 0:
-            return vector0
-        else:
-            rotation_vector = rotation_vector / theta
-            rotation_vector = rotation_vector.view(1, 3)
-            vector1 = vector0 * torch.cos(theta) + torch.cross(
-                rotation_vector, vector0, dim=1) * torch.sin(
-                    theta) + rotation_vector * (rotation_vector * vector0).sum(
-                        dim=1).unsqueeze(-1) * (1 - torch.cos(theta))
-        return vector1
+
+        return Rotation.from_rotvec(rotation_vector.to(vector0)).apply(vector0)
 
     def set_required_DoFs(self, RGC_remain_index):
         for e in self.part.elems.values():
-            RGC_remain_index[self._RGC_index] = e.set_required_DoFs(RGC_remain_index[self._RGC_index])
+            RGC_remain_index[self._RGC_index] = e.set_required_DoFs(
+                RGC_remain_index[self._RGC_index]
+            )
         return RGC_remain_index
-    
+
     def set_RGC_index(self, index):
         super().set_RGC_index(index)
-    
+
     def initialize(self, assembly: Assembly):
-        
+
         super().initialize(assembly=assembly)
 
     def get_mass_matrix(self):
@@ -807,28 +942,43 @@ class Instance(BaseObj):
         RGC_out = RGC
         RGC_out[self._RGC_index] = self.part.refine_RGC(RGC[self._RGC_index])
         return RGC_out
-    
+
     def potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
-        return self.part.potential_energy(RGC=RGC[self._RGC_index], rotation_matrix=self.rotation_matrix)
-    
-    def structural_stiffness(self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs) -> list[torch.Tensor]:
+        return self.part.potential_energy(
+            RGC=RGC[self._RGC_index], rotation_matrix=self.rotation_matrix
+        )
+
+    def structural_stiffness(
+        self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs
+    ) -> list[torch.Tensor]:
 
         if if_onlyforce:
-            R_indices, R_values = self.part.structural_force(RGC[self._RGC_index], rotation_matrix=self.rotation_matrix)
+            R_indices, R_values = self.part.structural_force(
+                RGC[self._RGC_index], rotation_matrix=self.rotation_matrix
+            )
             return R_indices + self._index_start, R_values
-        
-        R_indices, R_values, K_indices, K_values = self.part.structural_stiffness(RGC[self._RGC_index], rotation_matrix=self.rotation_matrix)
-        return R_indices + self._index_start, R_values, K_indices + self._index_start, K_values
-    
+
+        R_indices, R_values, K_indices, K_values = self.part.structural_stiffness(
+            RGC[self._RGC_index], rotation_matrix=self.rotation_matrix
+        )
+        return (
+            R_indices + self._index_start,
+            R_values,
+            K_indices + self._index_start,
+            K_values,
+        )
+
     def extract_surfaces(self, name: str) -> list[BaseSurface]:
         surfaces = self.part.extract_surfaces(name)
         return surfaces
 
-    def get_mesh(self, RGC: list[torch.Tensor] = None, surf_name: str = None) -> pv.PolyData:
+    def get_mesh(
+        self, RGC: list[torch.Tensor] = None, surf_name: str = None
+    ) -> pv.PolyData:
         """
         Get the mesh of the instance for visualization.
         Args:
-            surf_name (str, optional): Name of the surface set to visualize. 
+            surf_name (str, optional): Name of the surface set to visualize.
                 If None, use the Part exterior surface. Defaults to None.
         Returns:
             pv.PolyData: The mesh of the instance.
@@ -837,18 +987,21 @@ class Instance(BaseObj):
 
         if surf_name is None:
             surf_name = self.exterior_surface
-        if surf_name == '':
+        if surf_name == "":
             return pv.PolyData()
-        
+
         triangles = self.surfaces.get_trimesh(surf_name).cpu().numpy()
         nodes_transformed = self.nodes.cpu().numpy()
 
         if RGC is not None:
             nodes_transformed += RGC[self._RGC_index].cpu().numpy()
 
-        mesh = pv.PolyData(nodes_transformed, np.hstack([ np.full((triangles.shape[0], 1), 3), triangles ]))
+        mesh = pv.PolyData(
+            nodes_transformed,
+            np.hstack([np.full((triangles.shape[0], 1), 3), triangles]),
+        )
         return mesh
-    
+
     def show(self, RGC: list[torch.Tensor] = None, surf_name: str = None):
         mesh = self.get_mesh(RGC=RGC, surf_name=surf_name)
         if mesh.n_points == 0:
@@ -856,7 +1009,7 @@ class Instance(BaseObj):
             return
         plotter = pv.Plotter()
         try:
-            plotter.add_mesh(mesh, color='lightblue', show_edges=True)
+            plotter.add_mesh(mesh, color="lightblue", show_edges=True)
             plotter.show()
         finally:
             plotter.close()
