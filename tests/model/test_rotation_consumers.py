@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from torchfea import FEA_INP, Instance
+from torchfea.inp import Instance as InpInstance
 from torchfea.model.constraints import Couple
 from torchfea.ui.workbench import Workbench
 from torchfea.utils import skew_symmetric
@@ -38,12 +39,18 @@ def test_inp_instance_transform_round_trip(rotvec, translation):
     transform[:3, :3] = torch.matrix_exp(skew_symmetric(torch.tensor(rotvec))).numpy()
     transform[:3, 3] = translation
     assembly = FEA_INP.Assembly()
-    assembly.instances = {"instance": ("part", transform)}
+    z = np.asarray(rotvec)
+    angle = np.linalg.norm(z)
+    assembly.instances = [InpInstance(
+        name="instance", part_name="part",
+        translation=tuple(transform[:3, :3].T @ transform[:3, 3]),
+        rotation=(0., 0., 0., *(z/angle), np.degrees(angle)),
+    )]
     stream = StringIO()
     assembly.write_inp(stream)
     loaded = FEA_INP.Assembly()
     loaded.read(stream.getvalue().splitlines(), 0)
-    assert np.allclose(loaded.instances["instance"][1], transform, atol=1e-12)
+    assert np.allclose(loaded.instances[0].transform_matrix(), transform, atol=1e-12)
 
 
 def test_inp_rotation_about_an_offset_axis():
@@ -52,7 +59,7 @@ def test_inp_rotation_about_an_offset_axis():
         "*Assembly, name=Assembly", "*Instance, name=instance, part=part",
         "0, 0, 0", "1, 2, 0, 1, 2, 1, 90", "*End Instance", "*End Assembly",
     ], 0)
-    transform = loaded.instances["instance"][1]
+    transform = loaded.instances[0].transform_matrix()
     axis_start = np.array([1., 2., 0.])
     assert np.allclose(transform[:3, :3] @ axis_start + transform[:3, 3], axis_start)
     assert np.allclose(transform[:3, :3] @ [1., 0., 0.], [0., 1., 0.], atol=1e-12)

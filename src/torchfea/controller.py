@@ -1,15 +1,18 @@
+from pathlib import Path
 
 import numpy as np
 import torch
-from .model import Assembly
+
 from .cad import CADModel
-from .solver import BaseSolver
+from .inp import FEA_INP
 from .interfaces import Serializable
+from .model import Assembly
 from .model_hash import controller_model_hash, controller_result_compatibility_hash
+from .solver import BaseSolver
+
 
 class FEAController(Serializable):
-
-    _serialized_attributes_exclude = ['_model_hash']
+    _serialized_attributes_exclude = ["_model_hash"]
 
     def __init__(self, maximum_iteration: int = 10000) -> None:
         """
@@ -18,7 +21,7 @@ class FEAController(Serializable):
         Args:
             nodes (torch.Tensor): The nodes of the finite element model.
         """
-        
+
         self.assembly: Assembly = None
         """The assembly containing instances, elements, and reference points."""
 
@@ -44,7 +47,9 @@ class FEAController(Serializable):
         self.assembly.initialize(*args, **kwargs)
         self.solver.initialize(assembly=self.assembly, *args, **kwargs)
 
-    def solve(self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs):
+    def solve(
+        self, GC0: torch.Tensor = None, if_initialize: bool = True, *args, **kwargs
+    ):
         """
         Solves the finite element analysis problem.
 
@@ -107,7 +112,7 @@ class FEAController(Serializable):
         """
         if visited is None:
             visited = set()
-        
+
         obj_id = id(obj)
         if obj_id in visited:
             return
@@ -128,7 +133,7 @@ class FEAController(Serializable):
         elif isinstance(obj, tuple):
             for v in obj:
                 self._change_device_recursive(v, device, visited)
-        elif hasattr(obj, '__dict__'):
+        elif hasattr(obj, "__dict__"):
             for k, v in list(obj.__dict__.items()):
                 if isinstance(v, torch.Tensor):
                     setattr(obj, k, v.to(device))
@@ -155,6 +160,58 @@ class FEAController(Serializable):
             save_data["source_code"] = self._subclass_source_code
         np.savez_compressed(path, **save_data)
 
+    def export_inp(
+        self,
+        path: str | Path,
+        *,
+        nlgeom: bool = True,
+        initial_increment: float = 0.1,
+        minimum_increment: float = 1e-6,
+        maximum_increment: float = 0.1,
+        maximum_increments: int = 1000,
+        native_interactions: bool = False,
+    ) -> None:
+        """Export a complete Abaqus/Standard static job.
+
+        Includes the undeformed mesh, materials/sections, reference points,
+        supported constraints, boundary conditions, final loads, static step,
+        and field output. Initialization or a preceding solve is not needed.
+        Contacts export as frictionless hard contact; native_interactions
+        controls whether penalty joints may map to ideal connectors.
+        Unsupported model objects raise before the output file is opened.
+        See docs/abaqus_export.md for mappings and constitutive limitations.
+        """
+        self.to_inp(
+            nlgeom=nlgeom,
+            initial_increment=initial_increment,
+            minimum_increment=minimum_increment,
+            maximum_increment=maximum_increment,
+            maximum_increments=maximum_increments,
+            native_interactions=native_interactions,
+        ).write_inp(path)
+
+    def to_inp(
+        self,
+        *,
+        nlgeom: bool = True,
+        initial_increment: float = 0.1,
+        minimum_increment: float = 1e-6,
+        maximum_increment: float = 0.1,
+        maximum_increments: int = 1000,
+        native_interactions: bool = False,
+    ) -> "FEA_INP":
+        """Convert the model to an editable FEA_INP before writing a job."""
+
+        return FEA_INP.from_controller(
+            self,
+            nlgeom=nlgeom,
+            initial_increment=initial_increment,
+            minimum_increment=minimum_increment,
+            maximum_increment=maximum_increment,
+            maximum_increments=maximum_increments,
+            native_interactions=native_interactions,
+        )
+
     def GC2RGC(self, GC: torch.Tensor) -> list[torch.Tensor]:
         """
         Convert global coordinates (GC) to reduced global coordinates (RGC).
@@ -166,7 +223,7 @@ class FEAController(Serializable):
             list[torch.Tensor]: The reduced global coordinates.
         """
         return self.assembly._GC2RGC(GC)
-    
+
     def RGC2GC(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         """
         Convert reduced global coordinates (RGC) to global coordinates (GC).
@@ -189,6 +246,7 @@ class FEAController(Serializable):
         """
         self.assembly.set_work_conditions(work_conditions)
 
+
 def load_model(path: str) -> FEAController:
     """
     Load a finite element model from a file.
@@ -200,9 +258,9 @@ def load_model(path: str) -> FEAController:
         FEAController: The loaded finite element model.
     """
     with np.load(path, allow_pickle=True) as loaded:
-        serialized_data = loaded['data']
+        serialized_data = loaded["data"]
         controller = FEAController._deserialize(serialized_data)
-        stored_hash = str(np.asarray(loaded['model_hash']).reshape(-1)[0])
+        stored_hash = str(np.asarray(loaded["model_hash"]).reshape(-1)[0])
 
     # Deserialization restores only persistent fields.  Rebuild all links,
     # coordinate blocks, and enabled-object lists before the caller can use
@@ -241,6 +299,7 @@ def load_model(path: str) -> FEAController:
         raise ValueError("The model archive contains an empty model hash.")
     return controller
 
+
 def retrieve_source_code(path: str, path_out: str):
     """
     Retrieve the source code of subclasses from a saved model file for debugging purposes.
@@ -252,14 +311,16 @@ def retrieve_source_code(path: str, path_out: str):
 
     loaded = np.load(path, allow_pickle=True)
 
-    if 'source_code' not in loaded:
+    if "source_code" not in loaded:
         raise ValueError("The .npz file does not contain 'source_code' key.")
-    source_code = loaded['source_code'].item()  # Assuming source_code is stored as a dictionary in the .npz file
+    source_code = loaded[
+        "source_code"
+    ].item()  # Assuming source_code is stored as a dictionary in the .npz file
 
     result = ""
     for class_name, code in source_code.items():
         result += f"#========= Source code for {class_name} =========#\n"
         result += code + "\n\n"
-    
-    with open(path_out, 'w') as f:
+
+    with open(path_out, "w") as f:
         f.write(result)

@@ -36,7 +36,10 @@ torchfea/
     └── torchfea/               # 核心包
         ├── __init__.py         # 包入口
         ├── controller.py       # FEAController 主控制器
-        ├── inp.py              # INP 文件解析器
+        ├── inp.py              # 静态 INP 数据模型与保真读写
+        ├── converters/         # 有限元模型与外部格式模型之间的语义转换
+        │   ├── __init__.py     # 转换函数导出
+        │   └── inp.py          # controller_to_inp / inp_to_controller
         ├── model/              # 装配与模型管理模块
         │   ├── assembly.py     # Assembly 装配与全局矩阵装配
         │   ├── obj_base.py     # 共享对象基类
@@ -71,9 +74,19 @@ torchfea/
 - **主要方法**:
   - `initialize()`: 建立 RGC/GC、对象索引和求解器缓存
   - `solve(GC0=None, if_initialize=True)`: 执行求解；`GC0` 可作为初始猜测，`if_initialize=False` 用于只改材料或参数的连续计算
+  - `export_inp(path)`: 导出完整静力作业 INP
 - **属性**:
   - `assembly`: 装配对象
   - `solver`: 求解器对象
+
+### 格式模型与转换层
+
+`inp.py` 定义有固定字段和类型提示的 INP 对象，负责解析和写出文件。
+`converters/inp.py` 负责这些对象与 torchfea 模型之间的映射，不负责文件 I/O。
+材料参数换算、节点/单元编号以及载荷/约束对应关系都属于转换层。
+`controller.to_inp()` 和 `FEA_INP.from_controller()` 委托给转换层；
+`controller.export_inp()` 再调用 INP 模型的写出方法。
+包入口只导出 `from_inp` 便捷函数，不再包含转换实现。
 
 ### 2. 装配层 (Model Layer)
 
