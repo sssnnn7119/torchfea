@@ -550,7 +550,8 @@ class StaticImplicitSolver(BaseSolver):
                 for para_idx in range(num_load_params):
                     ### compute the Jacobian sensitivity using the chain rule:
                     Ldy_now = Ldy[:, para_idx]
-                    if Ldy_now.abs().sum() < 1e-8:
+                    # Objective units must not discard a nonzero derivative.
+                    if not torch.any(Ldy_now):
                         continue
 
                     W1 = fe_result.K_solver.solve(fe_result.K_sp, Ldy_now.cpu().numpy())
@@ -610,7 +611,7 @@ class StaticImplicitSolver(BaseSolver):
                         create_graph=True,
                     )
 
-                if wKdp.abs().sum() > 1e-8:
+                if torch.any(wKdp):
                     wKdpKinv = fe_result.K_solver.solve(
                         fe_result.K_sp, wKdp.cpu().numpy()
                     )
