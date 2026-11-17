@@ -400,7 +400,7 @@ assembly.add_load(penalty, name="fix_dof5")
 ### 7.2 代码实现
 
 ```python
-class Penalty_DoF(BaseLoad):
+class Penalty_DoF(ContinuousLoad):
     def __init__(self, obj_name, s, target, k, obj_type="auto"):
         self._parameters = torch.tensor([k, target], dtype=torch.float64)
 
@@ -436,6 +436,23 @@ $$f_s = -\frac{\partial U}{\partial u_s} = k \ (u_{\text{target}} - u_s)$$
 $$K_{ss} = \frac{\partial f_s}{\partial u_s} = -k$$
 
 这是一种**软约束**方式——$k$ 越大，约束越"硬"，但过大的 $k$ 会导致刚度矩阵病态。选择 $k$ 时需要权衡约束精度和数值稳定性。
+
+`Penalty_DoF` 继承 `ContinuousLoad`，本身就是连续位移加载：
+
+```python
+from torchfea.model.loads import Penalty_DoF
+
+displacement = Penalty_DoF(
+    obj_name="Part-1",
+    s=5,
+    target=0.02,
+    k=1e6,
+    obj_type="instance",
+)
+assembly.add_load(displacement, name="prescribed_u5")
+```
+
+连续加载系数默认是 `1.0`，由 `StaticImplicitSolver` 在增量和回退时设置。当前实现相当于逐步激活罚函数刚度；目标值和罚函数参数本身不被修改。
 
 ### 7.4 参考点关节
 

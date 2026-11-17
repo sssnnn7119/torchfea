@@ -305,7 +305,7 @@ class _PenaltyJoint(BaseLoad):
             (RGC[self._rp_index1].reshape(-1), RGC[self._rp_index2].reshape(-1))
         )
 
-    def get_stiffness(
+    def _get_stiffness(
         self, RGC: list[torch.Tensor], if_onlyforce: bool = False, *args, **kwargs
     ):
         coordinates = self._coordinates(RGC)
@@ -333,7 +333,7 @@ class _PenaltyJoint(BaseLoad):
         )
         return indices, force, stiffness_indices, tangent_values[nonzero]
 
-    def get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
+    def _get_potential_energy(self, RGC: list[torch.Tensor]) -> torch.Tensor:
         # Assembly subtracts load potentials from the total energy.
         return -self._energy(self._coordinates(RGC))
 

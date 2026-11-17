@@ -32,6 +32,9 @@ Gmsh/OCC-based CAE interface.
   export
 - Native `.npz` model/result serialization with model check codes for result
   validation
+- Complete Abaqus/Standard static job export through
+  `controller.export_inp("model.inp")`; see
+  [supported mappings and limitations](docs/abaqus_export.md)
 
 ## Installation
 
@@ -188,6 +191,8 @@ or degree-of-freedom layout does not match the loaded model.
 ```text
 src/torchfea/
 ├── controller.py       # model construction, solve, and serialization
+├── inp.py              # typed INP model and lossless parsing/writing
+├── converters/         # mappings between native and external models
 ├── cad/                # Gmsh OCC history and meshing
 ├── model/              # Assembly, Part, elements, materials, loads, BCs
 ├── solver/             # static and dynamic solvers/results
