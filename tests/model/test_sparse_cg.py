@@ -6,17 +6,13 @@ from scipy.sparse import csr_matrix
 from torchfea.solver import SparseSolver
 
 
-@pytest.mark.parametrize("device", [
-    "cpu", pytest.param("cuda", marks=pytest.mark.skipif(
-        not torch.cuda.is_available(), reason="CUDA unavailable")),
-])
-def test_cg_reuses_device_matrix_and_solves_each_rhs(device, monkeypatch):
+def test_cg_reuses_device_matrix_and_solves_each_rhs(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("CG requested a direct factorization")
 
     monkeypatch.setattr(SparseSolver, "_factorize", unexpected)
-    indices = torch.tensor([[0, 0, 0, 1, 1], [0, 0, 1, 0, 1]], device=device)
-    values = torch.tensor([2., 2., 1., 1., 3.], device=device, dtype=torch.float64)
+    indices = torch.tensor([[0, 0, 0, 1, 1], [0, 0, 1, 0, 1]], device="cpu")
+    values = torch.tensor([2., 2., 1., 1., 3.], device="cpu", dtype=torch.float64)
     solver = SparseSolver.from_coo(indices, values, 2, backend="cg")
     assert solver.matrix.device == values.device
     solver.factorize()

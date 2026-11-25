@@ -4,8 +4,9 @@ import torch
 from numpy.typing import NDArray
 
 from ..interfaces import Serializable
-from . import Instance, ReferencePoint, boundarys, constraints, loads
-from .part import Part, _Surfaces
+from . import boundarys, constraints, loads
+from .part import Instance, Part, _Surfaces
+from .reference_points import ReferencePoint
 
 
 class WorkCondition(Serializable):
