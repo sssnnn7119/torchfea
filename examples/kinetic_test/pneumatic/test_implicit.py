@@ -11,7 +11,7 @@ sys.path.append('.')
 import torchfea
 current_path = os.path.dirname(os.path.abspath(__file__))
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 fem = torchfea.FEA_INP()
@@ -48,7 +48,6 @@ t1 = time.time()
 
 result = fe.solve()
 
-current_path1 = "Z:/temp/"
-np.save(current_path1 + '/implicit_high_gamma_GC.npy', np.array([item.tolist() for item in result.GC_list], dtype=np.float32))
-np.save(current_path1 + '/implicit_high_gamma_GV.npy', np.array([item.tolist() for item in result.GV_list], dtype=np.float32))
-np.save(current_path1 + '/implicit_high_gamma_GA.npy', np.array([item.tolist() for item in result.GA_list], dtype=np.float32))
+np.save(current_path + '/implicit_high_gamma_GC.npy', np.array([item.tolist() for item in result.GC_list], dtype=np.float32))
+np.save(current_path + '/implicit_high_gamma_GV.npy', np.array([item.tolist() for item in result.GV_list], dtype=np.float32))
+np.save(current_path + '/implicit_high_gamma_GA.npy', np.array([item.tolist() for item in result.GA_list], dtype=np.float32))

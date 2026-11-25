@@ -1,4 +1,3 @@
-import pypardiso
 import torch
 import os
 import numpy as np
@@ -18,7 +17,7 @@ torch.set_default_dtype(torch.float64)
 
 fem = torchfea.FEA_INP()
 name = 'C3D4'
-fem.read_inp(current_path + '/C3D4.inp')
+fem.read_inp(os.path.join(current_path, '..', 'models', 'C3D4.inp'))
 
 fe = torchfea.from_inp(fem)
 fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
@@ -50,19 +49,19 @@ fe.assembly.add_constraint(torchfea.constraints.Couple(instance_name='final_mode
 
 t1 = time.time()
 fe.initialize()
-if not os.path.exists('Z:/temp/%s_results1.npz' % name):
+if not os.path.exists(os.path.join(current_path, '%s_results1.npz' % name)):
     load2.pressure = 0.02
     feresult1 = fe.solve()
-    feresult1.save('Z:/temp/%s_results1.npz' % name)
+    feresult1.save(os.path.join(current_path, '%s_results1.npz' % name))
 else:
-    feresult1 = torchfea.solver.StaticResult.load('Z:/temp/%s_results1.npz' % name)
+    feresult1 = torchfea.solver.StaticResult.load(os.path.join(current_path, '%s_results1.npz' % name))
 
-if not os.path.exists('Z:/temp/%s_results2.npz' % name):
+if not os.path.exists(os.path.join(current_path, '%s_results2.npz' % name)):
     load2.pressure = 0.05
     feresult2 = fe.solve()
-    feresult2.save('Z:/temp/%s_results2.npz' % name)
+    feresult2.save(os.path.join(current_path, '%s_results2.npz' % name))
 else:
-    feresult2 = torchfea.solver.StaticResult.load('Z:/temp/%s_results2.npz' % name)
+    feresult2 = torchfea.solver.StaticResult.load(os.path.join(current_path, '%s_results2.npz' % name))
 
 fe.initialize()
 

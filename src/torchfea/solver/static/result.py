@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pypardiso
-
 if TYPE_CHECKING:
     from ... import Assembly
 
@@ -13,6 +11,7 @@ import torch
 
 from ...model.assembly import WorkCondition
 from ..baseresult import BaseResult
+from ..sparse_solver import SparseSolver
 
 
 class StaticResult(BaseResult):
@@ -61,12 +60,12 @@ class StaticResult(BaseResult):
         This is stored to allow for sensitivity analysis and to ensure that the same conditions can be applied when reusing the result.
         """
 
-        self.K_solver: pypardiso.PyPardisoSolver = None
+        self.K_solver: SparseSolver | None = None
         """
-        The Pardiso solver for the stiffness matrix
+        Reusable sparse LU factors for the stiffness matrix
         """
 
-        self.K_sp: sp.csr_matrix = None
+        self.K_sp: sp.csr_matrix | None = None
         """
         The stiffness matrix in sparse CSR format
         """
@@ -94,42 +93,25 @@ class StaticResult(BaseResult):
     def __setstate__(self, state):
         """Restore state and reset K_solver/K_sp to None after deserialization."""
         self.__dict__.update(state)
-        self.K_solver = None
-        self.K_sp = None
+        self.remove_stored_factorization()
 
     def factorize_stiffness_matrix(self, assembly: Assembly):
-        """
-        Factorize the stiffness matrix using the Pardiso solver.
-
-        Args:
-            K_idx (torch.Tensor): The indices of the stiffness matrix.
-            K_val (torch.Tensor): The values of the stiffness matrix.
-        """
+        """Factorize the reduced stiffness matrix for repeated sensitivity solves."""
         assembly.set_work_conditions(self.work_conditions)
         K_indices, K_values = assembly.assemble_Stiffness_Matrix(GC=self.GC)[1:]
-        K_sp = sp.coo_matrix(
-            (
-                K_values.detach().cpu().numpy(),
-                (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy()),
-            )
-        )
-        self.K_sp = K_sp.tocsr()
-        self.K_solver = pypardiso.PyPardisoSolver()
-        self.K_solver.factorize(self.K_sp)
+        solver = SparseSolver.from_coo(K_indices, K_values, self.GC.numel())
+        solver.factorize()
+        self.K_solver = solver
+        self.K_sp = solver.matrix
         self.if_factorized = True
 
     def remove_stored_factorization(self):
         """
         Remove the stored factorization of the stiffness matrix to free up memory.
         """
-        if self.K_solver is not None:
-            self.K_solver.free_memory(everything=True)
-            self.K_solver = None
-            self.K_sp = None
-            self.if_factorized = False
-            import gc
-
-            gc.collect()
+        self.K_solver = None
+        self.K_sp = None
+        self.if_factorized = False
 
     def save(self, path: str):
         """

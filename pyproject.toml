@@ -6,14 +6,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.0.0",
-    "torchvision>=0.15.1",
     "pandas>=2.3.3",
-    "pypardiso>=0.4.7",
+    "scipy>=1.11.2",
+    "pypardiso>=0.4.7; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
     "pyvista>=0.46.4",
     "gmsh>=4.15.0",
     "cadquery-ocp>=8.0.1.1.0",
     "pyside6>=6.8.0",
 ]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
 
 [project.gui-scripts]
 # GUI entry point (available as `torchfea-ui` after installing torchfea).

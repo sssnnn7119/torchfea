@@ -11,8 +11,8 @@ import time
 import torch
 
 from ...model.loads.base import ContinuousLoad
-from .. import _linear_solver
 from ..basesolver import BaseSolver
+from ..sparse_solver import SparseSolver
 from .result import StaticResult
 
 logger = logging.getLogger(__name__)
@@ -238,21 +238,16 @@ class StaticImplicitSolver(BaseSolver):
         if result.if_factorized is False:
             result.factorize_stiffness_matrix(assembly=self.assembly)
 
-        jacobian = -result.K_solver.solve(result.K_sp, Rdp.cpu().numpy())
-        jacobian = jacobian.reshape(
-            -1, num_params
-        )  # Shape: (num_dofs, num_load_params)
+        jacobian = -result.K_solver.solve(Rdp)
 
         jacobian_output = {}
         index_now = 0
         for load_name in load_names:
             load = self.assembly._loads[load_name]
             param_len = load._parameters.numel()
-            jacobian_output[load_name] = (
-                torch.from_numpy(jacobian[:, index_now : index_now + param_len])
-                .to(result.GC.dtype)
-                .to(result.GC.device)
-            )
+            jacobian_output[load_name] = jacobian[
+                :, index_now : index_now + param_len
+            ].to(result.GC)
             index_now += param_len
 
         return jacobian_output
@@ -342,8 +337,7 @@ class StaticImplicitSolver(BaseSolver):
                 )
 
             LdU = GC_grad.grad.clone().detach()
-            W = fe_result.K_solver.solve(fe_result.K_sp, -LdU.cpu().numpy())
-            W_tensor = torch.tensor(W, dtype=GC_grad.dtype, device=GC_grad.device)
+            W_tensor = fe_result.K_solver.solve(-LdU)
 
             # 7. Backward Pass 2 (Total Sensitivity, lambda^T * R)
             R = self.assembly.assemble_force(GC=fe_result.GC)
@@ -521,10 +515,7 @@ class StaticImplicitSolver(BaseSolver):
                     )
 
                 # 8. sensitivity for GC
-                W0 = -fe_result.K_solver.solve(fe_result.K_sp, Ldx.cpu().numpy())
-                W0_tensor = torch.tensor(
-                    W0, dtype=fe_result.GC.dtype, device=fe_result.GC.device
-                )
+                W0_tensor = -fe_result.K_solver.solve(Ldx)
 
                 # 9. For each parameter, compute the Jacobian sensitivity using the chain rule:
 
@@ -554,10 +545,7 @@ class StaticImplicitSolver(BaseSolver):
                     if not torch.any(Ldy_now):
                         continue
 
-                    W1 = fe_result.K_solver.solve(fe_result.K_sp, Ldy_now.cpu().numpy())
-                    W1_tensor = torch.tensor(
-                        W1, dtype=fe_result.GC.dtype, device=fe_result.GC.device
-                    )
+                    W1_tensor = fe_result.K_solver.solve(Ldy_now).to(fe_result.GC)
 
                     ### evaluate the stiffness matrix sensitivity dK/dPara using autograd
                     def get_Kdp(load_now: torch.Tensor):
@@ -583,7 +571,7 @@ class StaticImplicitSolver(BaseSolver):
                         create_graph=False,
                     )[1]
                     Kdp = torch.sparse_coo_tensor(
-                        K_indices, Kdp_values, size=fe_result.K_sp.shape
+                        K_indices, Kdp_values, size=fe_result.K_sp.shape, check_invariants=True
                     )
 
                     wKdp += Kdp @ W1_tensor
@@ -612,16 +600,11 @@ class StaticImplicitSolver(BaseSolver):
                     )
 
                 if torch.any(wKdp):
-                    wKdpKinv = fe_result.K_solver.solve(
-                        fe_result.K_sp, wKdp.cpu().numpy()
-                    )
+                    wKdpKinv = fe_result.K_solver.solve(wKdp)
                 else:
                     wKdpKinv = torch.zeros_like(wKdp)
-                wKdpKinv_tensor = torch.tensor(
-                    wKdpKinv, dtype=fe_result.GC.dtype, device=fe_result.GC.device
-                )
 
-                obj_part_x = ((W0_tensor + wKdpKinv_tensor) * R_grad).sum()
+                obj_part_x = ((W0_tensor + wKdpKinv) * R_grad).sum()
 
                 obj_total = obj_part_x + obj_part_y
 
@@ -1039,31 +1022,17 @@ class StaticImplicitSolver(BaseSolver):
             or R_preconditioned.abs().max() < 1e-2
             or K_values_preconditioned.device.type == "cpu"
         ):
-            dx = _linear_solver.pypardiso_solver(
-                A_indices=K_indices,
-                A_values=K_values_preconditioned,
-                b=R_preconditioned,
+            solver = SparseSolver.from_coo(
+                K_indices, K_values_preconditioned, R.numel()
             )
+            dx = solver.solve(R_preconditioned)
             self.__low_alpha_count = 0
         else:
-            if self.__low_alpha_count > 0:
-                dx = _linear_solver.conjugate_gradient(
-                    K_indices,
-                    K_values_preconditioned,
-                    R_preconditioned,
-                    x0,
-                    tol=1e-5,
-                    max_iter=3000,
-                )
-            else:
-                dx = _linear_solver.conjugate_gradient(
-                    K_indices,
-                    K_values_preconditioned,
-                    R_preconditioned,
-                    x0,
-                    tol=1e-3,
-                    max_iter=1200,
-                )
+            tol, max_iter = (1e-5, 3000) if self.__low_alpha_count > 0 else (1e-3, 1200)
+            solver = SparseSolver.from_coo(
+                K_indices, K_values_preconditioned, R.numel(), backend="cg"
+            )
+            dx = solver.solve(R_preconditioned, x0=x0, tol=tol, max_iter=max_iter)
         result = dx.to(R.dtype) / diag
         return result
 

@@ -4,13 +4,12 @@ import numpy as np
 import time
 import sys
 sys.path.append('.')
-import scipy.sparse as sp
-import pypardiso
+from torchfea.solver import SparseSolver
 import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 fem = torchfea.FEA_INP()
@@ -55,11 +54,11 @@ fe.assembly.add_load(torchfea.loads.Contact(instance_name1='final_model', instan
 t1 = time.time()
 
 fe.initialize()
-if not os.path.exists('Z:/temp/%s_results.npz' % name):
+if not os.path.exists(os.path.join(current_path, '%s_results.npz' % name)):
     fearesult = fe.solve()
-    fearesult.save('Z:/temp/%s_results.npz' % name)
+    fearesult.save(os.path.join(current_path, '%s_results.npz' % name))
 else:
-    fearesult = torchfea.solver.StaticResult.load('Z:/temp/%s_results.npz' % name)
+    fearesult = torchfea.solver.StaticResult.load(os.path.join(current_path, '%s_results.npz' % name))
 
 
 GC0 = fearesult.GC.clone().detach()
@@ -68,12 +67,7 @@ RGC0 = fe.assembly._GC2RGC(GC0)
 K_indices, K_values = fe.assembly.assemble_Stiffness_Matrix(
     RGC=RGC0)[1:]
 
-K_sp = sp.coo_matrix(
-    (K_values.cpu().numpy(),
-        (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())),
-    shape=(fe.assembly._GC.shape[0], fe.assembly._GC.shape[0])).tocsr()
-K_solver = pypardiso.PyPardisoSolver()
-K_solver.factorize(K_sp)
+K_solver = SparseSolver.from_coo(K_indices, K_values, GC0.numel())
 
 
 part = fe.assembly.get_part('final_model')
@@ -82,9 +76,8 @@ def closure_adj(GC_now: torch.Tensor):
     R = fe.assembly._total_Potential_Energy(GC=GC_now)
     return R
 
-ADJF = -torch.autograd.functional.jacobian(closure_adj, GC0).cpu().numpy()
-ADJu = K_solver.solve(K_sp, ADJF)
-ADJu = torch.from_numpy(ADJu).to(GC0.device).type(GC0.dtype)
+ADJF = -torch.autograd.functional.jacobian(closure_adj, GC0)
+ADJu = K_solver.solve(ADJF)
 
 def closure_work(nodes_diff: torch.Tensor):
     part.nodes = nodes_diff

@@ -9,7 +9,7 @@ import pyvista as pv
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 current_path = pathlib.Path(current_path)
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 
@@ -53,12 +53,10 @@ result = fe.solve()
 # os.remove('temp.npz')
 
 
-torch.cuda.synchronize()          # 确保 GPU 操作完成
-# 3. 保存快照文件
-torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
-
-# 4. 关闭记录，避免影响性能
-torch.cuda.memory._record_memory_history(enabled=None)
+if torch.cuda.is_available():
+    torch.cuda.synchronize()
+    torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
 
 print('ok')
 print(result.GC[-6:])

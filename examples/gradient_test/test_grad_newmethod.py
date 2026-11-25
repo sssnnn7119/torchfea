@@ -1,22 +1,21 @@
-import pypardiso
 import torch
 import os
 import numpy as np
 import time
 import sys
 sys.path.append('.')
-import scipy.sparse as sp
+from torchfea.solver import SparseSolver
 import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 
 fem = torchfea.FEA_INP()
 name = 'C3D4'
-fem.read_inp(current_path + '/C3D4.inp')
+fem.read_inp(os.path.join(current_path, '..', 'models', 'C3D4.inp'))
 
 fe = torchfea.from_inp(fem)
 fe.solver = torchfea.solver.StaticImplicitSolver(tol_error=1e-6)
@@ -50,31 +49,25 @@ t1 = time.time()
 
 t1 = time.time()
 fe.initialize()
-if not os.path.exists('Z:/temp/%s_results.npz' % name):
+if not os.path.exists(os.path.join(current_path, '%s_results.npz' % name)):
     feresult = fe.solve()
-    feresult.save('Z:/temp/%s_results.npz' % name)
+    feresult.save(os.path.join(current_path, '%s_results.npz' % name))
 else:
-    feresult = torchfea.solver.StaticResult.load('Z:/temp/%s_results.npz' % name)
+    feresult = torchfea.solver.StaticResult.load(os.path.join(current_path, '%s_results.npz' % name))
 GC0 = feresult.GC.clone().detach()
 RGC0 = fe.assembly._GC2RGC(GC0)
 
 K_indices, K_values = fe.assembly.assemble_Stiffness_Matrix(
     RGC=RGC0)[1:]
 
-K_sp = sp.coo_matrix(
-    (K_values.cpu().numpy(),
-        (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())),
-    shape=(fe.assembly._GC.shape[0], fe.assembly._GC.shape[0])).tocsr()
-K_solver = pypardiso.PyPardisoSolver()
-K_solver.factorize(K_sp)
+K_solver = SparseSolver.from_coo(K_indices, K_values, GC0.numel())
 
 objective = GC0[-2]
 
-ADJFu = torch.zeros_like(GC0).cpu().numpy()
+ADJFu = torch.zeros_like(GC0)
 index_disp = -2
 ADJFu[index_disp] = -1
-ADJu = K_solver.solve(K_sp, ADJFu)
-ADJu = torch.from_numpy(ADJu).to(GC0.device).type(GC0.dtype)
+ADJu = K_solver.solve(ADJFu)
 
 
 part = fe.assembly.get_part('final_model')

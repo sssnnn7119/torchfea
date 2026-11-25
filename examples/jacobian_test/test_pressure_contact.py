@@ -12,7 +12,7 @@ import torchfea
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 fem = torchfea.FEA_INP()

@@ -143,7 +143,7 @@ $$|\Delta \mathbf{u}|_\infty < \text{tol} \quad \text{且} \quad |\mathbf{R}|_\i
 
 ## 3. 线性方程组求解：混合策略
 
-线性方程组 $\mathbf{K}\Delta\mathbf{u} = -\mathbf{R}$ 的求解是每步迭代中最耗时的部分。本框架采用**共轭梯度法（CG）+ PyPardiso 直接求解器**的混合策略，在速度和鲁棒性之间取得平衡。
+线性方程组 $\mathbf{K}\Delta\mathbf{u} = -\mathbf{R}$ 的求解是每步迭代中最耗时的部分。本框架采用**共轭梯度法（CG）+ 稀疏直接求解器**的混合策略，在速度和鲁棒性之间取得平衡。
 
 ### 3.1 对角预处理（Diagonal Preconditioning）
 
@@ -155,31 +155,53 @@ $$\tilde{K}_{ij} = \frac{K_{ij}}{\sqrt{|K_{ii}|} \cdot \sqrt{|K_{jj}|}}, \quad \
 
 ### 3.2 共轭梯度法（Conjugate Gradient）
 
+对称正定矩阵可显式选用 `backend="cg"`。PyTorch 在右端张量所在设备上使用 CSR 矩阵迭代，多个右端项按列求解。
+
+```python
+from torchfea.solver import SparseSolver
+
+solver = SparseSolver.from_coo(K_indices, K_values, residual.numel(), backend="cg")
+du = solver.solve(-residual, x0=previous_du, tol=1e-5, max_iter=3000)
+```
+
 - **初始解**：使用**上一步牛顿迭代的解** $\Delta\mathbf{u}_{k-1}$ 作为 CG 的初始猜测（经预处理后为 `x0 = dGC_prev * diag`）。由于牛顿迭代中相邻两步的方向通常接近，这能显著减少 CG 所需的迭代次数。
-- **收敛容差**：`tol = 1e-5`，要求较低。因为 CG 只是为牛顿法提供一个搜索方向，不需要极高的精度——线搜索会修正步长。
+- **收敛容差**：当残差范数平方与右端项范数平方的比值小于或等于 `tol` 时停止。静力学通常使用 `1e-3`，线搜索困难时使用 `1e-5`。隐式动力学使用 `1e-5`。达到迭代上限时返回当前近似解。
 - **最大迭代次数**：静力学为 1200（平时）/ 3000（困难时）；动力学为 1500（平时）/ 6000（困难时）。
 
-### 3.3 PyPardiso 直接求解器
+### 3.3 稀疏直接求解器
 
-在以下情况切换为 PyPardiso（基于 Intel MKL Pardiso 的直接稀疏求解器）：
+直接求解优先使用 PARDISO。若 PyPardiso 或 MKL 无法加载，或 PARDISO 对当前矩阵分解或求解失败（包括返回非有限值），则对该矩阵改用 SciPy SuperLU。后续右端项复用同一份分解。
+
+可通过 `torchfea.solver.SparseSolver` 直接求解组装好的矩阵。默认的 `backend="auto"` 按上述顺序选择后端。`backend="scipy"` 或 `backend="pardiso"` 固定使用指定后端，并直接报告该后端的错误。
+
+```python
+from torchfea.solver import SparseSolver
+
+solver = SparseSolver.from_coo(K_indices, K_values, residual.numel())
+du = solver.solve(-residual)
+jacobian = solver.solve(-Rdp)  # 同一刚度矩阵，多个右端项
+```
+
+已有 SciPy 稀疏矩阵时可直接构造 `SparseSolver(matrix)`。首次调用 `solve()` 时分解矩阵，也可用 `solver.factorize()` 提前分解。一个实例对应一个固定矩阵，牛顿迭代更新刚度后需为新矩阵创建实例。
+
+以下条件触发直接求解：
 
 | 触发条件 | 说明 |
 |----------|------|
 | `__low_alpha_count > 5`（静力学）或 `> 3`（动力学） | 连续多步线搜索步长过小，说明牛顿方向质量差，需要精确求解 |
-| `\|R_preconditioned\|_\infty < 1e-2` | 残差已经很小，接近最优解，精确求解可加速最终收敛 |
-| `device == 'cpu'` | 在 CPU 上运行时直接使用 PyPardiso（CG 在 CPU 上较慢） |
-| 动力学额外条件：`iter_now % 20 == 0` | 每 20 步做一次精确求解，定期"校准"方向 |
+| 预处理残差的无穷范数低于阈值（静力学 `1e-2`，动力学 `1e-3`） | 残差已经很小，接近最优解，精确求解可加速最终收敛 |
+| `device == 'cpu'` | 在 CPU 上运行时使用直接法 |
 
-使用 PyPardiso 后会重置 `__low_alpha_count = 0`。
+使用直接法后会重置 `__low_alpha_count = 0`。灵敏度分析对每个平衡状态的刚度矩阵做一次 LU 分解，随后复用分解结果求解多个载荷或目标函数对应的右端项。
 
 ### 3.4 为什么这样设计
 
 这一混合策略利用了两种方法的各自优势：
 
 - **CG 的优势**：迭代法，不需要矩阵分解，内存占用小，对于大规模问题单次求解快。初始解好时几步就收敛。
-- **PyPardiso 的优势**：直接法，结果精确，鲁棒性强。在接近最优解或 CG 困难时介入，避免 CG 收敛缓慢拖累整体性能。
+- **直接法的优势**：直接法，结果精确，鲁棒性强。在接近最优解或 CG 困难时介入，避免 CG 收敛缓慢拖累整体性能。
 
-核心思想是：**在牛顿迭代的早期阶段，方向不需要太精确，CG 快速给出一个大致方向即可；在接近最优解时，精确的牛顿方向能带来二次收敛速度**。动力学中还加入每 20 步定期精确求解的策略，防止 CG 方向逐渐偏离。
+核心思想是：**在牛顿迭代的早期阶段，方向不需要太精确，CG 快速给出一个大致方向即可；在接近最优解时，精确的牛顿方向能带来二次收敛速度**。在隐式动力学的 CG 分支中，每 20 步会提高一次迭代上限。
 
 ---
 
@@ -239,15 +261,15 @@ $$\Pi_{\text{inc}}(\mathbf{u}_{n+1}) = U(\mathbf{u}_{n+1}) - W(\mathbf{u}_{n+1})
 |------|--------|--------|
 | CG 最大迭代（平时） | 1200 | 1500 |
 | CG 最大迭代（困难） | 3000 | 6000 |
-| 触发 PyPardiso 的 `low_alpha` 阈值 | >5 | >3 |
+| 触发直接法的 `low_alpha` 阈值 | >5 | >3 |
 | 定期 CG 校准 | 无 | 每 20 步优先使用更高迭代上限的 CG |
 | 残差触发阈值 | `< 1e-2` | `< 1e-3` |
 
-动力学加入每 20 步定期执行 CG 校准的策略；在 CPU 上仍直接使用 PyPardiso。增量刚度矩阵中加入了质量矩阵的贡献 $\frac{1}{\beta\Delta t^2}\mathbf{M}$，当 $\Delta t$ 很小时该项很大，系统条件数可能变差。
+动力学加入每 20 步定期执行 CG 校准的策略；在 CPU 上仍使用直接法。增量刚度矩阵中加入了质量矩阵的贡献 $\frac{1}{\beta\Delta t^2}\mathbf{M}$，当 $\Delta t$ 很小时该项很大，系统条件数可能变差。
 
 ### 4.6 初始加速度
 
-初始加速度通过求解 $\mathbf{M}\ddot{\mathbf{u}}_0 = \mathbf{F}_{\text{ext}} - \mathbf{R}_{\text{int}}(\mathbf{u}_0)$ 得到，使用 PyPardiso 直接求解。
+初始加速度通过求解 $\mathbf{M}\ddot{\mathbf{u}}_0 = \mathbf{F}_{\text{ext}} - \mathbf{R}_{\text{int}}(\mathbf{u}_0)$ 得到，使用直接法求解。
 
 ---
 
@@ -266,7 +288,7 @@ $$\Pi_{\text{inc}}(\mathbf{u}_{n+1}) = U(\mathbf{u}_{n+1}) - W(\mathbf{u}_{n+1})
                         │                               │
               ┌─────────▼─────────┐                     │
               │  求解 K·dGC = -R  │                     │
-              │  (CG 或 PyPardiso)│                     │
+              │  (CG 或直接法)    │                     │
               └─────────┬─────────┘                     │
                         │                               │
               ┌─────────▼─────────┐                     │
@@ -335,6 +357,6 @@ $$\Pi_{\text{inc}}(\mathbf{u}_{n+1}) = U(\mathbf{u}_{n+1}) - W(\mathbf{u}_{n+1})
 
 2. **全局化牛顿法**：纯牛顿法在远离最优解时可能发散，回溯线搜索保证了每步迭代的势能单调下降，大幅提高鲁棒性。
 
-3. **混合线性求解**：CG 快但不保证收敛，PyPardiso 精确但开销大。通过自适应切换，在大多数迭代中享受 CG 的速度，在关键时刻获得直接法的可靠性。
+3. **混合线性求解**：CG 快但不保证收敛，直接法精确但开销大。通过自适应切换，在大多数迭代中享受 CG 的速度，在关键时刻获得直接法的可靠性。
 
 4. **PyTorch 原生**：所有计算基于 PyTorch 张量，天然支持 GPU 加速和自动微分。这使得灵敏度分析（伴随法）可以直接利用 PyTorch 的计算图。

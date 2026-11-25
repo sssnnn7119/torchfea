@@ -1,8 +1,6 @@
 from __future__ import annotations
 import os
 
-from torchvision.models.detection import rpn
-
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 import torch
 import numpy as np
@@ -47,7 +45,7 @@ fe.initialize()
 
 t1 = time.time()
 
-path0='Z:/temp/implicit_high_gamma_'
+path0 = os.path.join(current_path, 'implicit_high_gamma_')
 benchmark_data = np.load(path0 + 'GC.npy').astype(np.float64)
 v_list = np.load(path0 + 'GV.npy').astype(np.float64)
 

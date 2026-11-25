@@ -9,7 +9,7 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 import pathlib
 
 current_path = pathlib.Path(current_path)
-torch.set_default_device(torch.device("cuda"))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 
@@ -17,7 +17,7 @@ import torchfea
 
 fem = torchfea.FEA_INP()
 
-name = "C3D10"
+name = "C3D4"
 torchfea.enable_logging(
     level=torchfea.__logging.INFO,
     log_file=current_path.parent / "models" / f"{name}.log",

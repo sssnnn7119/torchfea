@@ -42,8 +42,8 @@ fe.initialize()
 t1 = time.time()
 
 
-benchmark_data = np.load('Z:/temp/benchmark_result.npy').astype(np.float64)
-v_list = np.load('Z:/temp/velocity.npy').astype(np.float64)
+benchmark_data = np.load(os.path.join(current_path, 'benchmark_result.npy')).astype(np.float64)
+v_list = np.load(os.path.join(current_path, 'velocity.npy')).astype(np.float64)
 
 # extern_surf = fe.loads['pressure-1'].surface_element.cpu().numpy()
 extern_surf = fe.assembly.get_instance('final_model').surfaces.get_elements('surface_0_All')[0]._elems.cpu().numpy()
