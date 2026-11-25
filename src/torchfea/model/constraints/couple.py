@@ -101,7 +101,9 @@ class Couple(BaseConstraint):
         graph through RGC, R0 and K_values without sparse tensor operations.
         """
         if not if_onlyforce and (K_indices is None or K_values is None):
-            raise ValueError("K_indices and K_values must be provided when if_onlyforce is False")
+            raise ValueError(
+                "K_indices and K_values must be provided when if_onlyforce is False"
+            )
 
         starts = self._assembly._RGC_list_indexStart
         node_start = int(starts[self._instance_RGC_index])
@@ -116,10 +118,12 @@ class Couple(BaseConstraint):
 
         first, second = self._calculate_Ydotz(RGC)
         nodal_force = R0[node_dofs]
-        residual[rp_start:rp_start + 6] = torch.cat((
-            nodal_force.sum(dim=0),
-            torch.einsum("na,nai->i", nodal_force, first),
-        ))
+        residual[rp_start : rp_start + 6] = torch.cat(
+            (
+                nodal_force.sum(dim=0),
+                torch.einsum("na,nai->i", nodal_force, first),
+            )
+        )
         if if_onlyforce:
             return residual
 
@@ -144,24 +148,45 @@ class Couple(BaseConstraint):
         # one matching translation and three rotational derivatives.
         map_row = row_coupled[boundary]
         node_row = torch.where(map_row, positions[0, boundary], positions[1, boundary])
-        component = torch.where(map_row, components[0, boundary], components[1, boundary])
-        weights = torch.cat((
-            K_values.new_ones((component.numel(), 1)), first[node_row, component],
-        ), dim=1)
-        rp_targets = rp_start + torch.cat((
-            component[:, None],
-            torch.arange(3, 6, device=K_indices.device).expand(component.numel(), -1),
-        ), dim=1)
-        outside = torch.where(map_row, K_indices[1, boundary], K_indices[0, boundary])[:, None]
-        cross_indices = torch.stack((
-            torch.where(map_row[:, None], rp_targets, outside).reshape(-1),
-            torch.where(map_row[:, None], outside, rp_targets).reshape(-1),
-        ))
+        component = torch.where(
+            map_row, components[0, boundary], components[1, boundary]
+        )
+        weights = torch.cat(
+            (
+                K_values.new_ones((component.numel(), 1)),
+                first[node_row, component],
+            ),
+            dim=1,
+        )
+        rp_targets = rp_start + torch.cat(
+            (
+                component[:, None],
+                torch.arange(3, 6, device=K_indices.device).expand(
+                    component.numel(), -1
+                ),
+            ),
+            dim=1,
+        )
+        outside = torch.where(map_row, K_indices[1, boundary], K_indices[0, boundary])[
+            :, None
+        ]
+        cross_indices = torch.stack(
+            (
+                torch.where(map_row[:, None], rp_targets, outside).reshape(-1),
+                torch.where(map_row[:, None], outside, rp_targets).reshape(-1),
+            )
+        )
         cross_values = (K_values[boundary, None] * weights).reshape(-1)
 
-        jacobian = torch.cat((
-            torch.eye(3, device=first.device, dtype=first.dtype).expand(nodes.numel(), -1, -1), first,
-        ), dim=-1)
+        jacobian = torch.cat(
+            (
+                torch.eye(3, device=first.device, dtype=first.dtype).expand(
+                    nodes.numel(), -1, -1
+                ),
+                first,
+            ),
+            dim=-1,
+        )
         row_jacobian = jacobian[positions[0, internal], components[0, internal]]
         col_jacobian = jacobian[positions[1, internal], components[1, internal]]
         block = row_jacobian.T @ (K_values[internal, None] * col_jacobian)

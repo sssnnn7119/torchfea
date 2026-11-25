@@ -1,17 +1,19 @@
-
 from __future__ import annotations
-from typing import Optional, TYPE_CHECKING
+
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .... import Part
 import torch
 
-class BaseSurface():
+
+class BaseSurface:
     """
     Base class for surface elements in the C3D family.
     This class is intended to be inherited by specific surface element classes.
     """
-    _subclasses: dict[str, 'BaseSurface'] = {}
+
+    _subclasses: dict[str, BaseSurface] = {}
 
     def __init_subclass__(cls):
         """Register subclasses in the class registry for factory method."""
@@ -23,7 +25,7 @@ class BaseSurface():
         The element connectivity.
         Shape: [num_elements, num_nodes_per_elem]
         """
-        
+
         self.num_nodes_per_elem: int
         """
         The number of nodes per element for surface elements.
@@ -38,7 +40,7 @@ class BaseSurface():
         """
         The Part object that this surface belongs to.
         """
-        
+
         self.shape_function_gaussian: list[torch.Tensor] = []
         """
             the shape functions of each guassian point 
@@ -131,24 +133,22 @@ class BaseSurface():
         if self.shape_function[0].shape[1] > 6:
             pp[:, 6] = gauss_coordinates[:, 0] ** 2 * gauss_coordinates[:, 1]
             pp[:, 7] = gauss_coordinates[:, 0] * gauss_coordinates[:, 1] ** 2
-        
 
-        shapeFun0 = torch.einsum('ab, gb->ga', self.shape_function[0],
-                                      pp)
-        shapeFun1 = torch.einsum('mab, gb->gma', self.shape_function[1],
-                                        pp)
-        
+        shapeFun0 = torch.einsum("ab, gb->ga", self.shape_function[0], pp)
+        shapeFun1 = torch.einsum("mab, gb->gma", self.shape_function[1], pp)
+
         self.shape_function_gaussian = [shapeFun0, shapeFun1]
-
 
         Jacobian = torch.zeros([self._num_gaussian, len(self._elems), 3, 2])
         shape_now = self.shape_function[1]
         for i in range(self.num_nodes_per_elem):
-            Jacobian += torch.einsum('gb,mb,ei->geim', pp, shape_now[:, i],
-                                     nodes[self._elems[:, i]])
-            
-        self.det_Jacobian = torch.einsum('geim, gein->gemn', Jacobian, Jacobian).det().sqrt()
-            
+            Jacobian += torch.einsum(
+                "gb,mb,ei->geim", pp, shape_now[:, i], nodes[self._elems[:, i]]
+            )
+
+        self.det_Jacobian = (
+            torch.einsum("geim, gein->gemn", Jacobian, Jacobian).det().sqrt()
+        )
 
     def _shape_function_derivative(self, shape_function: torch.Tensor, ind: int):
         """
@@ -196,9 +196,9 @@ class BaseSurface():
 
         return result
 
-
     def evaluate_shape_functions(
-        self, local_coordinates: torch.Tensor,
+        self,
+        local_coordinates: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Evaluate N, dN and d2N at arbitrary local coordinates analytically.
 
@@ -211,22 +211,34 @@ class BaseSurface():
         # Use the same polynomial basis as Gaussian-point evaluation so
         # arbitrary projections preserve the original FE interpolation.
         g, h = local_coordinates.unbind(-1)
-        basis = torch.stack([
-            torch.ones_like(g), g, h, g * h,
-            g * g, h * h, g * g * h, g * h * h,
-        ], dim=-1)
+        basis = torch.stack(
+            [
+                torch.ones_like(g),
+                g,
+                h,
+                g * h,
+                g * g,
+                h * h,
+                g * g * h,
+                g * h * h,
+            ],
+            dim=-1,
+        )
         coefficients = self.shape_function[0].to(local_coordinates)
-        basis = basis[..., :coefficients.shape[-1]]
+        basis = basis[..., : coefficients.shape[-1]]
         # Differentiate coefficients, then evaluate each derivative on the
         # common basis; this provides exact first and second derivatives.
-        first = torch.stack([
-            self._shape_function_derivative(coefficients, i) for i in range(2)
-        ])
-        second = torch.stack([
-            torch.stack([
-                self._shape_function_derivative(first[i], j) for j in range(2)
-            ]) for i in range(2)
-        ])
+        first = torch.stack(
+            [self._shape_function_derivative(coefficients, i) for i in range(2)]
+        )
+        second = torch.stack(
+            [
+                torch.stack(
+                    [self._shape_function_derivative(first[i], j) for j in range(2)]
+                )
+                for i in range(2)
+            ]
+        )
         return (
             torch.einsum("am,...m->...a", coefficients, basis),
             torch.einsum("iam,...m->...ia", first, basis),
@@ -239,13 +251,19 @@ class BaseSurface():
         Returns:
             torch.Tensor: The positions of the Gaussian points.
         """
-        gaussian_points = torch.zeros([self._num_gaussian, self._elems.shape[0], 3],
-                dtype=self._part.nodes.dtype, device=self._part.nodes.device)
-            
+        gaussian_points = torch.zeros(
+            [self._num_gaussian, self._elems.shape[0], 3],
+            dtype=self._part.nodes.dtype,
+            device=self._part.nodes.device,
+        )
+
         for a in range(self.num_nodes_per_elem):
-            gaussian_points += torch.einsum('g, ei->gei', self.shape_function_gaussian[0][:, a],
-                                        nodes[self._elems[:, a]])
-            
+            gaussian_points += torch.einsum(
+                "g, ei->gei",
+                self.shape_function_gaussian[0][:, a],
+                nodes[self._elems[:, a]],
+            )
+
         return gaussian_points
 
     def get_gaussian_normal(self, nodes: torch.Tensor) -> torch.Tensor:
@@ -255,11 +273,18 @@ class BaseSurface():
             torch.Tensor: The normals of the Gaussian points.
         """
 
-        rdu = torch.zeros([self._num_gaussian, self._elems.shape[0], 3, 2], dtype=self._part.nodes.dtype, device=self._part.nodes.device)
+        rdu = torch.zeros(
+            [self._num_gaussian, self._elems.shape[0], 3, 2],
+            dtype=self._part.nodes.dtype,
+            device=self._part.nodes.device,
+        )
 
         for a in range(self.num_nodes_per_elem):
-            rdu += torch.einsum('gm, ei->geim', self.shape_function_gaussian[1][:, :, a],
-                                 nodes[self._elems[:, a]])
+            rdu += torch.einsum(
+                "gm, ei->geim",
+                self.shape_function_gaussian[1][:, :, a],
+                nodes[self._elems[:, a]],
+            )
         gaussian_normals = torch.cross(rdu[:, :, :, 0], rdu[:, :, :, 1], dim=-1)
         return gaussian_normals
 
@@ -270,11 +295,11 @@ class BaseSurface():
         This property should be overridden in subclasses if needed.
         """
         return self._elems
-    
+
     @property
     def trimesh(self) -> torch.Tensor:
         """
-        Get the triangular mesh representation of the surface. 
+        Get the triangular mesh representation of the surface.
         This property should be overridden in subclasses if needed.
 
         Returns:

@@ -18,11 +18,10 @@ class LinearElastic(Materials_Base):
     returns ``P.T`` and the consistent ``d(P.T)/dF`` tangent.
     """
 
-    def __init__(self, E: torch.Tensor | float,
-                 nu: torch.Tensor | float) -> None:
+    def __init__(self, E: torch.Tensor | float, nu: torch.Tensor | float) -> None:
         """
         Initialize a linear elastic material for large deformation.
-        
+
         Args:
             E: Young's modulus
             nu: Poisson's ratio
@@ -40,7 +39,7 @@ class LinearElastic(Materials_Base):
 
         self.E = E  # Young's modulus
         self.nu = nu  # Poisson's ratio
-        
+
         # Pre-compute Lamé parameters
         self.lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
         self.mu = self.E / (2 * (1 + self.nu))  # Shear modulus (second Lamé parameter)
@@ -55,27 +54,28 @@ class LinearElastic(Materials_Base):
                 return x.view(g, 1).expand(g, e)
             if x.shape[0] == e:
                 return x.view(1, e).expand(g, e)
-            raise ValueError(f"Cannot broadcast parameter with shape {tuple(x.shape)} to [{g}, {e}]")
+            raise ValueError(
+                f"Cannot broadcast parameter with shape {tuple(x.shape)} to [{g}, {e}]"
+            )
         if x.dim() == 2 and x.shape[0] == g and x.shape[1] == e:
             return x
         raise ValueError(f"Unsupported parameter shape {tuple(x.shape)}")
 
-    def strain_energy_density_C3(self,
-                                 F: torch.Tensor = None,
-                                 I1: torch.Tensor = None,
-                                 J: torch.Tensor = None):
+    def strain_energy_density_C3(
+        self, F: torch.Tensor = None, I1: torch.Tensor = None, J: torch.Tensor = None
+    ):
         """
         Compute the strain energy density for large deformation linear elasticity.
-        
+
         For large deformations, we use the Saint Venant-Kirchhoff model:
         W = (lambda/2)(tr(E))^2 + mu*tr(E^2)
         where E = 1/2*(F^T*F - I) is the Green-Lagrange strain tensor
-        
+
         Args:
             F: Deformation gradient
             I1: First invariant (optional)
             J: Jacobian determinant (optional)
-            
+
         Returns:
             Strain energy density
         """
@@ -102,11 +102,14 @@ class LinearElastic(Materials_Base):
 
         return W
 
-    def material_Constitutive_C3(self, F: torch.Tensor,
-                                 J: torch.Tensor = None,
-                                 Jneg: torch.Tensor = None,
-                                 invF: torch.Tensor = None,
-                                 I1: torch.Tensor = None):
+    def material_Constitutive_C3(
+        self,
+        F: torch.Tensor,
+        J: torch.Tensor = None,
+        Jneg: torch.Tensor = None,
+        invF: torch.Tensor = None,
+        I1: torch.Tensor = None,
+    ):
         """
         Constitutive response for the ``Element_3D`` total-Lagrangian form.
 
@@ -157,17 +160,16 @@ class LinearElastic(Materials_Base):
         identity = torch.eye(3, device=F.device, dtype=F.dtype)
         lambda4 = lambda_.view(batch_size, elem_size, 1, 1, 1, 1)
         mu4 = mu.view(batch_size, elem_size, 1, 1, 1, 1)
-        Cmat = (
-            lambda4 * torch.einsum('ab,cd->abcd', identity, identity)
-            + mu4 * (
-                torch.einsum('ac,bd->abcd', identity, identity)
-                + torch.einsum('ad,bc->abcd', identity, identity)))
+        Cmat = lambda4 * torch.einsum("ab,cd->abcd", identity, identity) + mu4 * (
+            torch.einsum("ac,bd->abcd", identity, identity)
+            + torch.einsum("ad,bc->abcd", identity, identity)
+        )
 
         # A[i,A,k,L] = dP[i,A]/dF[k,L]
         #            = delta[i,k] S[L,A]
         #              + F[i,B] Cmat[B,A,L,D] F[k,D].
-        geometric = torch.einsum('ik,geLA->geiAkL', identity, S)
-        material = torch.einsum('geiB,geBALD,gekD->geiAkL', F, Cmat, F)
+        geometric = torch.einsum("ik,geLA->geiAkL", identity, S)
+        material = torch.einsum("geiB,geBALD,gekD->geiAkL", F, Cmat, F)
         tangent_P = geometric + material
 
         # Match the residual/stiffness index convention in C3base.py:

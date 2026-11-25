@@ -353,11 +353,14 @@ class Assembly(Serializable):
         # Sort compact output arrays with their writer IDs. Equal DoFs from
         # different writers become adjacent, even if one writer repeats them.
         output_dofs: list[NDArray[np.int64]] = [
-            constraint.get_output_dofs()
-            for constraint in enabled.values()
+            constraint.get_output_dofs() for constraint in enabled.values()
         ]
-        written = np.concatenate(output_dofs) if output_dofs else np.empty(0, dtype=np.int64)
-        owners = np.repeat(np.arange(len(names), dtype=np.int64), [dofs.size for dofs in output_dofs])
+        written = (
+            np.concatenate(output_dofs) if output_dofs else np.empty(0, dtype=np.int64)
+        )
+        owners = np.repeat(
+            np.arange(len(names), dtype=np.int64), [dofs.size for dofs in output_dofs]
+        )
         permutation = np.argsort(written, kind="stable")
         written, owners = written[permutation], owners[permutation]
         duplicates = np.flatnonzero(
@@ -367,7 +370,8 @@ class Assembly(Serializable):
             index = int(duplicates[0])
             raise ValueError(
                 f"Dependent DoF {written[index]} is written by both constraints "
-                f"'{names[owners[index]]}' and '{names[owners[index + 1]]}'.")
+                f"'{names[owners[index]]}' and '{names[owners[index + 1]]}'."
+            )
 
         # Sort and scan repeated targets before batch lookup, without scalar
         # hash tables. Python only processes constraint edges, not DoFs.
@@ -383,7 +387,9 @@ class Assembly(Serializable):
             matches = positions[written[positions] == dofs]
             # Count into a constraint-sized array to collapse shared DoFs
             # into one edge without allocating a model-sized ownership map.
-            producers = np.flatnonzero(np.bincount(owners[matches], minlength=len(names)))
+            producers = np.flatnonzero(
+                np.bincount(owners[matches], minlength=len(names))
+            )
             for producer_index in producers:
                 producer = names[producer_index]
                 if producer != consumer:
