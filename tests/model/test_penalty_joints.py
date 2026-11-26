@@ -90,7 +90,7 @@ def test_force_and_tangent_match_energy_derivatives(joint_type, kwargs, scale):
     assert 0 < stiffness.numel() <= 144
     assert torch.isfinite(stiffness).all()
     matrix = torch.sparse_coo_tensor(
-        stiffness_indices, stiffness, (assembly._RGC_list_indexStart[-1],) * 2
+        stiffness_indices, stiffness, (assembly._RGC_list_indexStart[-1],) * 2, check_invariants=True
     ).coalesce()
     assert matrix.layout == torch.sparse_coo
     assert matrix._nnz() == stiffness.numel()  # no duplicate COO entries
@@ -139,7 +139,7 @@ def test_joint_assembly_residual_and_sparse_tangent(joint_type, kwargs):
     assert torch.isfinite(residual).all()
     assert torch.isfinite(values).all()
     assert indices.shape[1] == values.numel()
-    sparse_tangent = torch.sparse_coo_tensor(indices, values, (12, 12)).coalesce()
+    sparse_tangent = torch.sparse_coo_tensor(indices, values, (12, 12), check_invariants=True).coalesce()
     assert sparse_tangent.layout == torch.sparse_coo
     tangent = sparse_tangent.to_dense()
     assert torch.allclose(tangent, tangent.T, atol=1e-7)

@@ -42,8 +42,8 @@ fe.initialize()
 t1 = time.time()
 
 
-benchmark_data = np.load('Z:/temp/benchmark_result.npy').astype(np.float64)
-v_list = np.load('Z:/temp/velocity.npy').astype(np.float64)
+benchmark_data = np.load(os.path.join(current_path, 'benchmark_result.npy')).astype(np.float64)
+v_list = np.load(os.path.join(current_path, 'velocity.npy')).astype(np.float64)
 
 # extern_surf = fe.loads['pressure-1'].surface_element.cpu().numpy()
 extern_surf = fe.assembly.get_instance('final_model').surfaces.get_elements('surface_0_All')[0]._elems.cpu().numpy()
@@ -85,13 +85,15 @@ plotter.view_azimuth(90)
 plotter.view_elevation(90)
 plotter.camera.parallel_scale *= 2
 
+frames_directory = os.path.join(current_path, 'frames')
+os.makedirs(frames_directory, exist_ok=True)
 for idx in range(len(benchmark_data)):
     deformed_surface = deformed_list[idx]
     Unorm = Unorm_list[idx]
     mesh.points = deformed_surface
     mesh['displacement'] = Unorm
     plotter.update_scalars(mesh['displacement'])
-    filename = f'Z:/temp/frames/frame_{idx:04d}.png'
+    filename = os.path.join(frames_directory, f'frame_{idx:04d}.png')
     plotter.screenshot(filename)
 
 import imageio
@@ -118,7 +120,7 @@ def create_mp4_from_frames(frames_folder, output_path, fps=10):
 
     # 将每一帧添加到视频中
     for idx in range(len(benchmark_data)):
-        filename = f'Z:/temp/frames/frame_{idx:04d}.png'
+        filename = os.path.join(frames_folder, f'frame_{idx:04d}.png')
         image = imageio.imread(filename)
         writer.append_data(image)
 
@@ -127,8 +129,7 @@ def create_mp4_from_frames(frames_folder, output_path, fps=10):
     print(f"视频已保存至 {output_path}")
 
 # --- 调用函数创建视频 ---
-frames_directory = 'Z:/temp/frames'
-output_video_file = 'Z:/temp/animation.mp4'
+output_video_file = os.path.join(current_path, 'animation.mp4')
 frame_rate = 50  # 在这里调节帧率
 
 # 确保在创建视频前所有Mayavi窗口都已关闭，以完成图像保存

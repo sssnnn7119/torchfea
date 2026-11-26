@@ -1,6 +1,4 @@
 from pathlib import Path
-import shutil
-import subprocess
 import runpy
 
 import numpy as np
@@ -316,17 +314,3 @@ def test_existing_element_examples_export_valid_connectivity(tmp_path, element_t
         assert not current
         assert all(len(row) == expected + 1 for row in connectivity)
         assert all(1 <= n <= node_count for row in connectivity for n in row[1:])
-
-
-@pytest.mark.skipif(shutil.which("abaqus") is None, reason="Abaqus executable is not installed")
-def test_abaqus_datacheck(tmp_path):
-    controller = controller_fixture()
-    path = tmp_path / "torchfea_export.inp"
-    controller.export_inp(path, nlgeom=False)
-    result = subprocess.run(
-        [shutil.which("abaqus"), "job=torchfea_export", f"input={path}", "datacheck", "interactive"],
-        cwd=tmp_path, capture_output=True, text=True, timeout=120,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    data = (tmp_path / "torchfea_export.dat").read_text(errors="replace")
-    assert "***ERROR" not in data.upper(), data

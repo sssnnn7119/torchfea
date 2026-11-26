@@ -1,17 +1,20 @@
 import numpy as np
 import torch
+
 from .base import BaseBoundary
+
 
 class Boundary_Condition(BaseBoundary):
     """
     Boundary condition (Dirichlet) for instances: fix selected DoFs on a set of nodes.
     """
 
-    def __init__(self,
-                 instance_name: str,
-                 set_nodes_name: str,
-                 indexDoF: list[int] = [0, 1, 2],
-                 ) -> None:
+    def __init__(
+        self,
+        instance_name: str,
+        set_nodes_name: str,
+        indexDoF: list[int] = [0, 1, 2],
+    ) -> None:
         super().__init__()
         self.set_nodes_name = set_nodes_name
         self.instance_name = instance_name
@@ -21,8 +24,12 @@ class Boundary_Condition(BaseBoundary):
 
     def initialize(self, assembly):
         super().initialize(assembly)
-        self.index_nodes = self._assembly.get_instance(self.instance_name).set_nodes[self.set_nodes_name]
-        self._constraint_index = self._assembly.get_instance(self.instance_name)._RGC_index
+        self.index_nodes = self._assembly.get_instance(self.instance_name).set_nodes[
+            self.set_nodes_name
+        ]
+        self._constraint_index = self._assembly.get_instance(
+            self.instance_name
+        )._RGC_index
 
     def modify_RGC(self, RGC: list[torch.Tensor]) -> list[torch.Tensor]:
         """

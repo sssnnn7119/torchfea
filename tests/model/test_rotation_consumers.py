@@ -85,7 +85,7 @@ def test_couple_residual_and_tangent_with_shared_rotation_derivatives(rotvec):
         if not tangent:
             return couple.modify_R_K(coordinates, residual, if_onlyforce=True)[6:]
         force, indices, values = couple.modify_R_K(coordinates, residual, nodal_indices, weights)
-        matrix = torch.sparse_coo_tensor(indices, values, (12, 12)).coalesce().to_dense()
+        matrix = torch.sparse_coo_tensor(indices, values, (12, 12), check_invariants=True).coalesce().to_dense()
         return force[6:], matrix[6:, 6:]
 
     def energy(q):

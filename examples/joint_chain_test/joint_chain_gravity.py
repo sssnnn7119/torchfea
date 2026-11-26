@@ -321,4 +321,4 @@ if __name__ == "__main__":
     if options.threads < 1:
         parser.error("--threads must be positive")
     torch.set_num_threads(options.threads)
-    solve_and_report(show_plot=True, joint_stiffness=options.joint_stiffness)
+    solve_and_report(show_plot=options.plot, joint_stiffness=options.joint_stiffness)

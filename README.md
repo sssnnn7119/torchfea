@@ -13,8 +13,8 @@ Gmsh/OCC-based CAE interface.
 
 - Nonlinear three-dimensional solid mechanics with PyTorch tensors and
   float64 arithmetic
-- Static implicit Newton–Raphson solving with line search and sparse
-  Pardiso/Conjugate-Gradient linear algebra
+- Static implicit Newton–Raphson solving with line search, PARDISO or SuperLU
+  sparse direct solves, and conjugate gradients
 - Dynamic implicit (Newmark-β) and dynamic explicit (central-difference)
   solvers
 - Neo-Hookean, Mooney–Rivlin, Yeoh, Gent, Arruda–Boyce, Ogden, and
@@ -38,8 +38,10 @@ Gmsh/OCC-based CAE interface.
 
 ## Installation
 
-TorchFEA requires Python ≥ 3.12. A PyTorch **float64** build is recommended;
-CUDA is optional and can be selected through PyTorch's normal device settings.
+TorchFEA requires Python ≥ 3.12 and uses PyTorch **float64** tensors.
+The macOS target is Apple Silicon with the default CPU device. PyTorch's
+MPS backend lacks float64 tensor support. On CUDA systems, select the GPU
+through PyTorch's normal device settings.
 
 Install a released package:
 
@@ -51,6 +53,19 @@ Install the current checkout while developing:
 
 ```bash
 pip install -e .
+```
+
+TorchFEA installs PyPardiso automatically on x86-64 Linux and Windows.
+Sparse direct solves prefer PARDISO whenever its runtime is available. If it
+cannot load, factorize, or solve a matrix, TorchFEA uses SciPy SuperLU.
+
+On an Apple Silicon Mac, install this checkout with native arm64 Python 3.12.
+To reproduce the macOS 15 test environment with uv, run these commands from
+the repository root. The example solves a gravity-loaded joint chain.
+
+```bash
+uv sync --locked --python 3.12
+uv run python examples/joint_chain_test/joint_chain_gravity.py
 ```
 
 The GUI entry point is installed with the package:

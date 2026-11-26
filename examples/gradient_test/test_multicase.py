@@ -4,13 +4,12 @@ import numpy as np
 import time
 import sys
 sys.path.append('.')
-import scipy.sparse as sp
-import pypardiso
+from torchfea.solver import SparseSolver
 import torchfea
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 current_path = os.path.dirname(os.path.abspath(__file__))
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 fem = torchfea.FEA_INP()
@@ -115,18 +114,12 @@ for i in range(len(GC0_list)):
     K_indices, K_values = fe.assembly.assemble_Stiffness_Matrix(
         RGC=RGC0)[1:]
 
-    K_sp = sp.coo_matrix(
-        (K_values.cpu().numpy(),
-            (K_indices[0].cpu().numpy(), K_indices[1].cpu().numpy())),
-        shape=(GC0.shape[0], GC0.shape[0])).tocsr()
-    K_solver = pypardiso.PyPardisoSolver()
-    K_solver.factorize(K_sp)
+    K_solver = SparseSolver.from_coo(K_indices, K_values, GC0.numel())
 
 
     part = fe.assembly.get_part('final_model')
 
-    ADJu = K_solver.solve(K_sp, ADJFu[i].cpu().numpy())
-    ADJu = torch.from_numpy(ADJu).to(GC0.device).type(GC0.dtype)
+    ADJu = K_solver.solve(ADJFu[i])
     ADJu_list.append(ADJu)
 
 grad_pos = torch.autograd.functional.jacobian(closure_work, part.nodes)

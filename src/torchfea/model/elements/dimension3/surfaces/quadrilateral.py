@@ -1,5 +1,7 @@
 import torch
+
 from .basesurface import BaseSurface
+
 
 class Q4(BaseSurface):
     """
@@ -20,24 +22,24 @@ class Q4(BaseSurface):
         # Define shape functions for Q4 surface (4-node quadrilateral element)
         # N1 = (1-ξ)(1-η)/4, N2 = (1+ξ)(1-η)/4, N3 = (1+ξ)(1+η)/4, N4 = (1-ξ)(1+η)/4
         self.shape_function = [
-            torch.tensor([[0.25, -0.25, -0.25, 0.25],
-                          [0.25, 0.25, -0.25, -0.25],
-                          [0.25, 0.25, 0.25, 0.25],
-                          [0.25, -0.25, 0.25, -0.25]])
+            torch.tensor(
+                [
+                    [0.25, -0.25, -0.25, 0.25],
+                    [0.25, 0.25, -0.25, -0.25],
+                    [0.25, 0.25, 0.25, 0.25],
+                    [0.25, -0.25, 0.25, -0.25],
+                ]
+            )
         ]
 
         shape_i = torch.zeros([2, 4, 4])
         for i in range(2):
-            shape_i[i] = self._shape_function_derivative(
-                self.shape_function[0], i)
+            shape_i[i] = self._shape_function_derivative(self.shape_function[0], i)
         self.shape_function.append(shape_i)
-        
+
         # Define Gaussian points for Q4 surface (2x2 integration)
         g = 1.0 / torch.sqrt(torch.tensor(3.0))
-        pp = torch.tensor([[-g, -g],
-                          [g, -g],
-                          [g, g],
-                          [-g, g]])
+        pp = torch.tensor([[-g, -g], [g, -g], [g, g], [-g, g]])
         self.gaussian_weight = torch.tensor([1.0, 1.0, 1.0, 1.0])
 
         # Define Gaussian points for Q8 surface (3x3 integration)
@@ -52,18 +54,18 @@ class Q4(BaseSurface):
 
         self.num_nodes_per_elem = 4
         self._num_gaussian = 4
-        
+
         # Pre-load Gaussian points for Q4 surface
         self._pre_load_gaussian(pp, self._part.nodes)
-    
+
     @property
     def trimesh(self) -> torch.Tensor:
         """
         Get the triangular mesh representation of the surface.
         This property returns the element connectivity for Q4 surface elements.
         """
-        return torch.cat([self._elems[:, [0, 1, 2]],
-                          self._elems[:, [0, 2, 3]]], dim=0)
+        return torch.cat([self._elems[:, [0, 1, 2]], self._elems[:, [0, 2, 3]]], dim=0)
+
 
 class Q8(BaseSurface):
     """
@@ -84,37 +86,94 @@ class Q8(BaseSurface):
         # Define shape functions for Q8 surface (8-node quadrilateral element)
         # 手工展开给定的Q8形函数表达式为基函数[1, g, h, g*h, g², h², g²*h, g*h²]的系数
         self.shape_function = [
-            torch.tensor([
-                [-0.25, 0.0, 0.0, 0.25, 0.25, 0.25, -0.25, -0.25],  # N1 = -1/4(1-g)(1-h)(1+g+h)
-                [-0.25, 0.0, 0.0, -0.25, 0.25, 0.25, -0.25, 0.25],   # N2 = -1/4(1+g)(1-h)(1-g+h)  
-                [-0.25, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25, 0.25],     # N3 = -1/4(1+g)(1+h)(1-g-h)
-                [-0.25, 0.0, 0.0, -0.25, 0.25, 0.25, 0.25, -0.25],   # N4 = -1/4(1-g)(1+h)(1+g-h)
-                [0.5, 0.0, -0.5, 0.0, -0.5, 0.0, 0.5, 0.0],          # N5 = 1/2(1-g²)(1-h)
-                [0.5, 0.5, 0.0, 0.0, 0.0, -0.5, 0.0, -0.5],          # N6 = 1/2(1-h²)(1+g)
-                [0.5, 0.0, 0.5, 0.0, -0.5, 0.0, -0.5, 0.0],          # N7 = 1/2(1-g²)(1+h)
-                [0.5, -0.5, 0.0, 0.0, 0.0, -0.5, 0.0, 0.5]           # N8 = 1/2(1-h²)(1-g)
-            ])
+            torch.tensor(
+                [
+                    [
+                        -0.25,
+                        0.0,
+                        0.0,
+                        0.25,
+                        0.25,
+                        0.25,
+                        -0.25,
+                        -0.25,
+                    ],  # N1 = -1/4(1-g)(1-h)(1+g+h)
+                    [
+                        -0.25,
+                        0.0,
+                        0.0,
+                        -0.25,
+                        0.25,
+                        0.25,
+                        -0.25,
+                        0.25,
+                    ],  # N2 = -1/4(1+g)(1-h)(1-g+h)
+                    [
+                        -0.25,
+                        0.0,
+                        0.0,
+                        0.25,
+                        0.25,
+                        0.25,
+                        0.25,
+                        0.25,
+                    ],  # N3 = -1/4(1+g)(1+h)(1-g-h)
+                    [
+                        -0.25,
+                        0.0,
+                        0.0,
+                        -0.25,
+                        0.25,
+                        0.25,
+                        0.25,
+                        -0.25,
+                    ],  # N4 = -1/4(1-g)(1+h)(1+g-h)
+                    [0.5, 0.0, -0.5, 0.0, -0.5, 0.0, 0.5, 0.0],  # N5 = 1/2(1-g²)(1-h)
+                    [0.5, 0.5, 0.0, 0.0, 0.0, -0.5, 0.0, -0.5],  # N6 = 1/2(1-h²)(1+g)
+                    [0.5, 0.0, 0.5, 0.0, -0.5, 0.0, -0.5, 0.0],  # N7 = 1/2(1-g²)(1+h)
+                    [0.5, -0.5, 0.0, 0.0, 0.0, -0.5, 0.0, 0.5],  # N8 = 1/2(1-h²)(1-g)
+                ]
+            )
         ]
 
         shape_i = torch.zeros([2, 8, 8])
         for i in range(2):
-            shape_i[i] = self._shape_function_derivative(
-                self.shape_function[0], i)
+            shape_i[i] = self._shape_function_derivative(self.shape_function[0], i)
         self.shape_function.append(shape_i)
-        
+
         # Define Gaussian points for Q8 surface (3x3 integration)
-        g = torch.sqrt(torch.tensor(3.0/5.0))
-        pp = torch.tensor([[-g, -g], [0.0, -g], [g, -g],
-                          [-g, 0.0], [0.0, 0.0], [g, 0.0],
-                          [-g, g], [0.0, g], [g, g]])
-        w1, w2 = 5.0/9.0, 8.0/9.0
-        self.gaussian_weight = torch.tensor([w1*w1, w2*w1, w1*w1,
-                                           w1*w2, w2*w2, w1*w2,
-                                           w1*w1, w2*w1, w1*w1])
+        g = torch.sqrt(torch.tensor(3.0 / 5.0))
+        pp = torch.tensor(
+            [
+                [-g, -g],
+                [0.0, -g],
+                [g, -g],
+                [-g, 0.0],
+                [0.0, 0.0],
+                [g, 0.0],
+                [-g, g],
+                [0.0, g],
+                [g, g],
+            ]
+        )
+        w1, w2 = 5.0 / 9.0, 8.0 / 9.0
+        self.gaussian_weight = torch.tensor(
+            [
+                w1 * w1,
+                w2 * w1,
+                w1 * w1,
+                w1 * w2,
+                w2 * w2,
+                w1 * w2,
+                w1 * w1,
+                w2 * w1,
+                w1 * w1,
+            ]
+        )
 
         self.num_nodes_per_elem = 8
         self._num_gaussian = 9
-        
+
         # Pre-load Gaussian points for Q8 surface
         self._pre_load_gaussian(pp, self._part.nodes)
 
@@ -125,16 +184,21 @@ class Q8(BaseSurface):
         This property returns the element connectivity for Q8 surface elements.
         """
         return self._elems[:, [0, 4, 1, 5, 2, 6, 3, 7]]
-    
+
     @property
     def trimesh(self) -> torch.Tensor:
         """
         Get the triangular mesh representation of the surface.
         This property returns the element connectivity for Q8 surface elements.
         """
-        return torch.cat([self._elems[:, [0, 4, 7]],
-                          self._elems[:, [1, 5, 4]],
-                          self._elems[:, [2, 6, 5]],
-                          self._elems[:, [3, 7, 6]],
-                          self._elems[:, [7, 4, 5]],
-                          self._elems[:, [7, 5, 6]]], dim=0)
+        return torch.cat(
+            [
+                self._elems[:, [0, 4, 7]],
+                self._elems[:, [1, 5, 4]],
+                self._elems[:, [2, 6, 5]],
+                self._elems[:, [3, 7, 6]],
+                self._elems[:, [7, 4, 5]],
+                self._elems[:, [7, 5, 6]],
+            ],
+            dim=0,
+        )

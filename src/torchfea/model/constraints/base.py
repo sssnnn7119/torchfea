@@ -39,7 +39,10 @@ class BaseConstraint(BaseObj):
     ):
 
         R = torch.sparse_coo_tensor(
-            indices=[[]], values=[], size=[self._assembly._RGC_list_indexStart[-1]]
+            indices=[[]],
+            values=[],
+            size=[self._assembly._RGC_list_indexStart[-1]],
+            check_invariants=True,
         )
         if if_onlyforce:
             return R

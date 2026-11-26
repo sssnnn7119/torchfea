@@ -245,8 +245,10 @@ class Rotation:
     def as_euler(self, *, degrees: bool = False) -> torch.Tensor:
         """Return XYZ roll, pitch, yaw; chooses roll=0 at gimbal lock."""
         r = self.as_matrix()
-        pitch = torch.asin((-r[2, 0]).clamp(-1, 1))
-        if torch.abs(torch.cos(pitch)) < 1e-7:
+        # The first column retains cos(pitch) even when sin(pitch) rounds to ±1.
+        cos_pitch = torch.hypot(r[0, 0], r[1, 0])
+        pitch = torch.atan2(-r[2, 0], cos_pitch)
+        if cos_pitch < 1e-7:
             roll = pitch.new_zeros(())
             yaw = torch.atan2(-r[0, 1], r[1, 1])
         else:

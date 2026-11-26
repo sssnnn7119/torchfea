@@ -1,5 +1,8 @@
 import torch
+
 from .basesurface import BaseSurface
+
+
 class T3(BaseSurface):
     """
     Class for triangular surface elements in the C3D family.
@@ -8,8 +11,6 @@ class T3(BaseSurface):
 
     def __init__(self, elems: torch.Tensor) -> None:
         super().__init__(elems)
-        
-
 
     def initialize(self, part) -> None:
         """
@@ -20,17 +21,14 @@ class T3(BaseSurface):
 
         # Define shape functions for T3 surface
         self.shape_function = [
-            torch.tensor([[1.0, -1.0, -1.0], 
-                          [0.0, 1.0, 0.0], 
-                          [0.0, 0.0, 1.0]])
+            torch.tensor([[1.0, -1.0, -1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         ]
 
         shape_i = torch.zeros([2, 3, 3])
         for i in range(2):
-            shape_i[i] = self._shape_function_derivative(
-                self.shape_function[0], i)
+            shape_i[i] = self._shape_function_derivative(self.shape_function[0], i)
         self.shape_function.append(shape_i)
-        
+
         # Define Gaussian points for T3 surface
         pp = torch.tensor([[1 / 3, 1 / 3]])
         self.gaussian_weight = torch.tensor([0.5])
@@ -41,9 +39,10 @@ class T3(BaseSurface):
 
         self.num_nodes_per_elem = 3
         self._num_gaussian = 1
-        
+
         # Pre-load Gaussian points for T3 surface
         self._pre_load_gaussian(pp, self._part.nodes)
+
 
 class T6(BaseSurface):
     """
@@ -65,29 +64,30 @@ class T6(BaseSurface):
         # N1 = (1-ξ-η)(1-2ξ-2η), N2 = ξ(2ξ-1), N3 = η(2η-1)
         # N4 = 4ξ(1-ξ-η), N5 = 4ξη, N6 = 4η(1-ξ-η)
         self.shape_function = [
-            torch.tensor([[1.0, -3.0, -3.0, 4.0, 2.0, 2.0],
-                          [0.0, -1.0, 0.0, 0.0, 2.0, 0.0],
-                          [0.0, 0.0, -1.0, 0.0, 0.0, 2.0],
-                          [0.0, 4.0, 0.0, -4.0, -4.0, 0.0],
-                          [0.0, 0.0, 0.0, 4.0, 0.0, 0.0],
-                          [0.0, 0.0, 4.0, -4.0, 0.0, -4.0]])
+            torch.tensor(
+                [
+                    [1.0, -3.0, -3.0, 4.0, 2.0, 2.0],
+                    [0.0, -1.0, 0.0, 0.0, 2.0, 0.0],
+                    [0.0, 0.0, -1.0, 0.0, 0.0, 2.0],
+                    [0.0, 4.0, 0.0, -4.0, -4.0, 0.0],
+                    [0.0, 0.0, 0.0, 4.0, 0.0, 0.0],
+                    [0.0, 0.0, 4.0, -4.0, 0.0, -4.0],
+                ]
+            )
         ]
 
         shape_i = torch.zeros([2, 6, 6])
         for i in range(2):
-            shape_i[i] = self._shape_function_derivative(
-                self.shape_function[0], i)
+            shape_i[i] = self._shape_function_derivative(self.shape_function[0], i)
         self.shape_function.append(shape_i)
-        
+
         # Define Gaussian points for T6 surface (3-point integration)
-        pp = torch.tensor([[1/6, 1/6],
-                          [2/3, 1/6],
-                          [1/6, 2/3]])
-        self.gaussian_weight = torch.tensor([1/6, 1/6, 1/6])
+        pp = torch.tensor([[1 / 6, 1 / 6], [2 / 3, 1 / 6], [1 / 6, 2 / 3]])
+        self.gaussian_weight = torch.tensor([1 / 6, 1 / 6, 1 / 6])
 
         self.num_nodes_per_elem = 6
         self._num_gaussian = 3
-        
+
         # Pre-load Gaussian points for T6 surface
         self._pre_load_gaussian(pp, self._part.nodes)
 
@@ -98,7 +98,7 @@ class T6(BaseSurface):
         This property returns the element connectivity for T6 surface elements.
         """
         return self._elems[:, [0, 3, 1, 4, 2, 5]]
-    
+
     @property
     def trimesh(self) -> torch.Tensor:
         """

@@ -11,7 +11,7 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 import pathlib
 current_path = pathlib.Path(current_path)
 
-torch.set_default_device(torch.device('cuda'))
+torch.set_default_device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float64)
 
 from typing import Optional, TYPE_CHECKING, Callable

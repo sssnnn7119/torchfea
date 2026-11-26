@@ -42,6 +42,13 @@ def test_euler_gimbal_lock_preserves_rotation(pitch):
     assert torch.allclose(recovered.as_matrix(), rotation.as_matrix(), atol=1e-12)
 
 
+def test_quaternion_quarter_turn_preserves_pitch_at_gimbal_lock():
+    # Normalization can put |R[2, 0]| just below 1 even for an exact quarter turn.
+    rotation = Rotation.from_quaternion([1.0, 0.0, 1.0, 0.0])
+    recovered = Rotation.from_euler(rotation.as_euler())
+    assert torch.allclose(recovered.as_matrix(), rotation.as_matrix(), atol=1e-12)
+
+
 def test_invalid_rotation_inputs():
     with pytest.raises(ValueError, match="quaternion"):
         Rotation.from_quaternion([0.0, 0.0, 0.0, 0.0])

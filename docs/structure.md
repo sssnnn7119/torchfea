@@ -54,7 +54,7 @@ torchfea/
         │   └── loads/          # 载荷模块
         └── solver/             # 求解器模块
             ├── basesolver.py   # 求解器基类
-            ├── _linear_solver.py # 线性方程组求解
+            ├── sparse_solver.py # 线性方程组求解
             ├── static/         # 静力学求解器
             │   ├── solver.py   # 静力隐式求解器
             │   └── result.py   # 结果处理
@@ -149,7 +149,7 @@ torchfea/
 ```
 src/torchfea/solver/
 ├── basesolver.py         # BaseSolver 基类
-├── _linear_solver.py     # 线性求解工具
+├── sparse_solver.py     # 线性求解工具
 ├── static/
 │   ├── solver.py         # StaticImplicitSolver 静力隐式
 │   └── result.py         # StaticResult 结果类
@@ -161,7 +161,7 @@ src/torchfea/solver/
 #### 求解器类型与要点
 
 - **StaticImplicitSolver** (`static/solver.py`)
-  - Newton-Raphson 迭代，带回溯线搜索和预条件线性求解（CPU 上使用 PyPardiso，适合时使用 CG）。
+  - Newton-Raphson 迭代，带回溯线搜索和预条件线性求解（CPU 上优先使用 PARDISO，失败时使用 SciPy SuperLU，适合时使用 CG）。
   - 核心接口：`get_stiffness_matrix(GC_now) -> (R, K_idx, K_val)`，`solve(GC0=None)`。
 - **DynamicImplicitSolver** (`dynamic/implicit.py`)
   - Newmark-β（默认 γ=0.5, β=0.25），以增量能量为目标进行非线性迭代。

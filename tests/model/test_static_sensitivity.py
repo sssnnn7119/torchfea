@@ -1,4 +1,5 @@
 """Adjoint derivatives retain small nonzero load-Jacobian contributions."""
+import pickle
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,21 @@ def equilibrium(design: float, pressure: float) -> float:
     for _ in range(25):
         u -= (design*u + u**3 - pressure) / (design + 3*u*u)
     return u
+
+
+def test_factorized_result_solves_multiple_rhs_and_rebuilds_after_pickle():
+    assembly = CubicSpring(torch.tensor([2.0]))
+    result = StaticResult(GC=torch.tensor([1.0]), work_conditions=3.0)
+    rhs = torch.tensor([[5.0, 10.0]]).numpy()
+    result.factorize_stiffness_matrix(assembly)
+    assert (result.K_solver.solve(rhs) == [[1.0, 2.0]]).all()
+
+    restored = pickle.loads(pickle.dumps(result))
+    assert not restored.if_factorized
+    restored.factorize_stiffness_matrix(assembly)
+    assert (restored.K_solver.solve(rhs[:, :1]) == [[1.0]]).all()
+    restored.remove_stored_factorization()
+    assert restored.K_solver is restored.K_sp is None
 
 
 def sensitivity(scale: float, pressures: list[float], *, kind: str = "jacobian") -> float:
